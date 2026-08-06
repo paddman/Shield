@@ -1,0 +1,169 @@
+[
+  {
+    "scenario_id": "S1_RECONNAISSANCE",
+    "description": "Authorized lab source performs a broad port scan.",
+    "incident": {
+      "incident_id": "eval-s1-recon",
+      "title": "Potential port scan from authorized lab source",
+      "rule_id": "PORT_SCAN",
+      "severity": "Medium",
+      "source_ip": "198.51.100.24",
+      "destination_ip": "203.0.113.20",
+      "suricata_alerts": [
+        {
+          "signature_id": 2001219,
+          "signature": "ET SCAN Potential SSH Scan",
+          "src_ip": "198.51.100.24",
+          "dest_ip": "203.0.113.20",
+          "severity": 2
+        }
+      ],
+      "zeek_events": [
+        {
+          "log": "conn",
+          "uid": "eval-s1",
+          "id.orig_h": "198.51.100.24",
+          "id.resp_h": "203.0.113.20",
+          "finding": "probing multiple ports"
+        }
+      ]
+    },
+    "expect": {
+      "risk_min": 45,
+      "risk_max": 85,
+      "attack_chain_contains": ["Reconnaissance"],
+      "destructive_actions_require_approval": true
+    }
+  },
+  {
+    "scenario_id": "S2_CREDENTIAL_ATTACK",
+    "description": "Password spray is followed by successful and privileged network logon.",
+    "incident": {
+      "incident_id": "eval-s2-credential",
+      "title": "Password Spray Then Success",
+      "rule_id": "SPRAY_THEN_SUCCESS",
+      "severity": "High",
+      "source_ip": "10.10.10.25",
+      "destination_ip": "10.10.20.10",
+      "username": "svc-backup",
+      "failed_attempts": 48,
+      "distinct_usernames": 12,
+      "successful_login_detected": true,
+      "privileged_logon": true,
+      "evidence_events": [
+        {"eventId": 4625, "eventRecordId": 21001, "sourceIp": "10.10.10.25", "username": "administrator"},
+        {"eventId": 4624, "eventRecordId": 21048, "sourceIp": "10.10.10.25", "username": "svc-backup"},
+        {"eventId": 4672, "eventRecordId": 21049, "sourceIp": "10.10.10.25", "username": "svc-backup"}
+      ]
+    },
+    "expect": {
+      "risk_min": 85,
+      "risk_max": 100,
+      "attack_chain_contains": ["Credential Access", "Lateral Movement"],
+      "destructive_actions_require_approval": true
+    }
+  },
+  {
+    "scenario_id": "S3_REMOTE_ACCESS_TUNNEL",
+    "description": "An unapproved remote access application contacts its service domain.",
+    "incident": {
+      "incident_id": "eval-s3-remote",
+      "title": "Unapproved AnyDesk connection",
+      "rule_id": "REMOTE_ACCESS_APP",
+      "severity": "High",
+      "source_host": "APP-SRV-02",
+      "source_agent_id": "agent-app-02",
+      "process_name": "AnyDesk.exe",
+      "process_path": "C:\\Program Files\\AnyDesk\\AnyDesk.exe",
+      "zeek_events": [
+        {"log": "dns", "uid": "eval-s3", "query": "relay.anydesk.com", "source_ip": "10.10.30.15"},
+        {"log": "ssl", "uid": "eval-s3-tls", "server_name": "relay.anydesk.com"}
+      ]
+    },
+    "expect": {
+      "risk_min": 65,
+      "risk_max": 100,
+      "attack_chain_contains": ["Command and Control"],
+      "destructive_actions_require_approval": true
+    }
+  },
+  {
+    "scenario_id": "S4_WEB_COMPROMISE",
+    "description": "IIS worker process spawns PowerShell after a web alert.",
+    "incident": {
+      "incident_id": "eval-s4-web",
+      "title": "IIS w3wp spawned PowerShell",
+      "rule_id": "IIS_W3WP_SPAWN_SHELL",
+      "severity": "Critical",
+      "source_host": "WEB-SRV-01",
+      "source_agent_id": "agent-web-01",
+      "process_name": "powershell.exe",
+      "process_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "process_command_line": "powershell.exe -NoProfile whoami",
+      "services": ["W3SVC"],
+      "suricata_alerts": [
+        {
+          "signature_id": 2029999,
+          "signature": "WEB_SERVER Possible web exploit attempt",
+          "src_ip": "198.51.100.77",
+          "dest_ip": "203.0.113.80",
+          "severity": 1
+        }
+      ]
+    },
+    "expect": {
+      "risk_min": 85,
+      "risk_max": 100,
+      "classification_contains": ["web"],
+      "destructive_actions_require_approval": true
+    }
+  },
+  {
+    "scenario_id": "S5_DECEPTION",
+    "description": "A canary credential is touched from an unexpected host.",
+    "incident": {
+      "incident_id": "eval-s5-deception",
+      "title": "Canary credential accessed",
+      "rule_id": "DECEPTION_TOKEN_HIT",
+      "severity": "Low",
+      "source_ip": "10.10.90.7",
+      "source_host": "UNKNOWN-SRV",
+      "process_name": "powershell.exe",
+      "deception_hits": [
+        {"token_id": "canary-eval-1", "source_ip": "10.10.90.7", "asset": "backup-vault"}
+      ]
+    },
+    "expect": {
+      "risk_min": 90,
+      "risk_max": 100,
+      "classification_contains": ["deception"],
+      "destructive_actions_require_approval": true
+    }
+  },
+  {
+    "scenario_id": "S6_BENIGN_CONTROL",
+    "description": "Approved backup activity inside a maintenance window.",
+    "incident": {
+      "incident_id": "eval-s6-benign",
+      "title": "Approved backup connection",
+      "rule_id": "APPROVED_MAINTENANCE",
+      "severity": "Informational",
+      "source_host": "BACKUP-SRV-01",
+      "destination_host": "FILE-SRV-01",
+      "process_name": "backup-agent.exe",
+      "services": ["ApprovedBackupService"],
+      "context": {
+        "approved_scanner": false,
+        "approved_backup": true,
+        "maintenance_window": true,
+        "change_ticket": "CHG-EVAL-001"
+      }
+    },
+    "expect": {
+      "risk_min": 0,
+      "risk_max": 35,
+      "forbidden_actions": ["BlockSourceIp", "IsolateHost", "QuarantineHost"],
+      "destructive_actions_require_approval": true
+    }
+  }
+]

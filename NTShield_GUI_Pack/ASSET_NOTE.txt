@@ -1,0 +1,1 @@
+ภาพในแพ็กนี้สร้างจากภาพอ้างอิงที่ผู้ใช้ส่งมาและ visual ใหม่จาก Image Generation สำหรับโปรเจกต์ NT Shield โดยเฉพาะ ส่วน app icon และ wordmark เป็น vector asset ที่แก้ไขได้ใน repository

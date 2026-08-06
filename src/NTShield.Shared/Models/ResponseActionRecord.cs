@@ -1,0 +1,53 @@
+namespace NTShield.Shared.Models;
+
+public sealed class ResponseActionRecord
+{
+    public long Id { get; set; }
+    public string ActionId { get; set; } = Guid.NewGuid().ToString("N");
+    public string RequestId { get; set; } = Guid.NewGuid().ToString("N");
+    public string Requester { get; set; } = "local";
+    public DateTimeOffset TimestampUtc { get; set; } = DateTimeOffset.UtcNow;
+    public string ComputerName { get; set; } = string.Empty;
+    public string AgentId { get; set; } = string.Empty;
+    public string AlertId { get; set; } = string.Empty;
+    public string IncidentId { get; set; } = string.Empty;
+    public string ActionType { get; set; } = string.Empty;
+    public string Status { get; set; } = "Pending";
+    public string Reason { get; set; } = string.Empty;
+    public string? BeforeState { get; set; }
+    public string? Result { get; set; }
+    public string? RollbackCommand { get; set; }
+    public string? Details { get; set; }
+    public string? Error { get; set; }
+    public bool RequiresApproval { get; set; }
+    public bool Approved { get; set; }
+    public string? ApprovalId { get; set; }
+    public string AuditLog { get; set; } = string.Empty;
+}
+
+public sealed class ResponseActionRequest
+{
+    public string RequestId { get; set; } = Guid.NewGuid().ToString("N");
+    public string Requester { get; set; } = string.Empty;
+    /// <summary>Which agent should execute this action (required for firewall from Dashboard).</summary>
+    public string? TargetAgentId { get; set; }
+    public string ActionType { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
+    public string? TargetIp { get; set; }
+    public int? TargetPort { get; set; }
+    /// <summary>in | out — firewall direction (default depends on action type).</summary>
+    public string? Direction { get; set; }
+    /// <summary>tcp | udp | any</summary>
+    public string? Protocol { get; set; }
+    /// <summary>Optional NTS-* rule name for remove/open/close operations.</summary>
+    public string? RuleName { get; set; }
+    public int? ProcessId { get; set; }
+    public string? ServiceName { get; set; }
+    public string? TaskPath { get; set; }
+    public string? TaskName { get; set; }
+    public string? IncidentId { get; set; }
+    public string? AlertId { get; set; }
+    public bool Approved { get; set; }
+    public string? ApprovalId { get; set; }
+    public int DurationMinutes { get; set; } = 60;
+}

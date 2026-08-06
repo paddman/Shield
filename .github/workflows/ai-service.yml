@@ -1,0 +1,40 @@
+name: NT Shield Brain AI Service
+
+on:
+  push:
+    paths:
+      - "ai-service/**"
+      - "docker-compose.ai.yml"
+      - ".github/workflows/ai-service.yml"
+  pull_request:
+    paths:
+      - "ai-service/**"
+      - "docker-compose.ai.yml"
+      - ".github/workflows/ai-service.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ai-service/pyproject.toml
+      - name: Install
+        run: python -m pip install -e "./ai-service[dev]"
+      - name: Compile
+        run: python -m compileall -q ai-service/app ai-service/tests ai-service/scripts
+      - name: Test
+        run: pytest ai-service/tests
+      - name: Controlled acceptance suite
+        run: >-
+          python ai-service/scripts/evaluate_acceptance.py
+          --suite ai-service/evaluation/acceptance-suite.json
+          --out ai-service/acceptance-report.json
+      - name: Lint
+        run: ruff check ai-service/app ai-service/tests ai-service/scripts

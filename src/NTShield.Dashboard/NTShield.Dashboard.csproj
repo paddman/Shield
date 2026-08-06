@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <ApplicationIcon>Assets\NTShield.ico</ApplicationIcon>
+    <AssemblyName>NTShield.Dashboard</AssemblyName>
+    <RootNamespace>NTShield.Dashboard</RootNamespace>
+    <Product>NT Shield Dashboard</Product>
+    <Description>Native Windows dashboard — NT Shield GUI Pack</Description>
+
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\NTShield.Shared\NTShield.Shared.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\ntshield_logo_32.png" />
+    <Resource Include="Assets\ntshield_logo_64.png" />
+    <Resource Include="Assets\ntshield_logo_128.png" />
+    <Resource Include="Assets\ntshield_logo_256.png" />
+    <Resource Include="Assets\ntshield_full.png" />
+    <Resource Include="Assets\ntshield_avatar_256.png" />
+    <Resource Include="Assets\ntshield_dashboard_pose.png" Condition="Exists('Assets\ntshield_dashboard_pose.png')" />
+    <Resource Include="Assets\app-icon-master.png" />
+    <Resource Include="Assets\app-32.png" />
+    <Resource Include="Assets\app-256.png" />
+    <Content Include="Assets\NTShield.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Page Update="Theme.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+  </ItemGroup>
+</Project>

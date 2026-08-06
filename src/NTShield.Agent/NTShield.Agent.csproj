@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>NTShield.Agent</RootNamespace>
+    <OutputType>Exe</OutputType>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <Description>NT Shield Endpoint Security Monitoring Agent (Windows Service)</Description>
+    <AssemblyName>NTShield.Agent</AssemblyName>
+    <ApplicationIcon>..\..\assets\icons\NTShield.ico</ApplicationIcon>
+    <NoWarn>$(NoWarn);NU1903</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\assets\icons\NTShield.ico" Link="NTShield.ico" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\assets\icons\NTShield.ico')" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.0" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="9.0.0" />
+    <PackageReference Include="Serilog.Settings.Configuration" Version="9.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\NTShield.Collectors.Windows\NTShield.Collectors.Windows.csproj" />
+    <ProjectReference Include="..\NTShield.Core\NTShield.Core.csproj" />
+    <ProjectReference Include="..\NTShield.Detection\NTShield.Detection.csproj" />
+    <ProjectReference Include="..\NTShield.Response\NTShield.Response.csproj" />
+    <ProjectReference Include="..\NTShield.Shared\NTShield.Shared.csproj" />
+    <ProjectReference Include="..\NTShield.Storage\NTShield.Storage.csproj" />
+    <ProjectReference Include="..\NTShield.Transport\NTShield.Transport.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="appsettings.Production.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\config\rules.json" Link="config\rules.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\config\allowlist.json" Link="config\allowlist.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <!-- Avoid duplicate default-rules.json from Detection project during publish -->
+  <Target Name="RemoveDuplicateRulesFromPublish" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Filename)%(Extension)' == 'default-rules.json'" />
+    </ItemGroup>
+  </Target>
+</Project>

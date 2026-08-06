@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>NTShield.Server</RootNamespace>
+    <Description>NT Shield Central API and correlation server</Description>
+    <!-- Self-contained so target PCs need no installed .NET runtime -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Certificate" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
+    <PackageReference Include="Npgsql" Version="9.0.3" />
+    <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\NTShield.Shared\NTShield.Shared.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\config\signatures\opensource-signatures.json"
+          Link="signatures\opensource-signatures.json"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('..\..\config\signatures\opensource-signatures.json')" />
+  </ItemGroup>
+</Project>

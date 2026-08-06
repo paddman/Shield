@@ -1,0 +1,44 @@
+## Build
+bin/
+obj/
+out/
+publish/
+artifacts/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## IDE
+.vs/
+.idea/
+*.swp
+*~
+
+## Logs / local data
+logs/
+*.db
+*.db-shm
+*.db-wal
+App_Data/
+
+## Secrets
+*.pfx
+*.p12
+*.key
+appsettings.*.local.json
+.env
+
+## OS
+Thumbs.db
+Desktop.ini
+
+# Local noise
+error/
+assets/installer/_face_tmp.png

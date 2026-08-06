@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>NTShield.Agent.Tray</RootNamespace>
+    <AssemblyName>NTShield.Agent.Tray</AssemblyName>
+    <ApplicationIcon>..\..\assets\icons\NTShield.ico</ApplicationIcon>
+    <Product>NT Shield Agent Tray</Product>
+    <Description>System tray status icon for NT Shield Agent</Description>
+
+    <!-- RID set at publish time (win-x64 self-contained for endpoints). -->
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\assets\icons\NTShield.ico" Link="NTShield.ico" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\assets\icons\NTShield.ico')" />
+  </ItemGroup>
+</Project>

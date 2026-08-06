@@ -1,0 +1,55 @@
+{
+  "agent": {
+    "id": "",
+    "computer_name": ""
+  },
+  "central": {
+    "url": "https://127.0.0.1:7443",
+    "enrollment_token": "",
+    "api_key": "",
+    "ca_file": "",
+    "client_certificate_file": "",
+    "client_key_file": "",
+    "insecure_skip_verify": false,
+    "timeout_seconds": 20
+  },
+  "collection": {
+    "log_poll_seconds": 3,
+    "connection_poll_seconds": 30,
+    "flush_interval_seconds": 15,
+    "heartbeat_interval_seconds": 60,
+    "max_batch_events": 500,
+    "max_batch_connections": 1500,
+    "max_memory_items": 10000,
+    "max_spool_bytes": 268435456,
+    "max_line_bytes": 262144,
+    "max_waf_event_bytes": 524288,
+    "max_connections": 10000,
+    "start_at_end": true,
+    "collect_closed_connections": true,
+    "log_files": [
+      "/var/log/messages",
+      "/var/log/secure",
+      "/var/log/audit/audit.log"
+    ],
+    "waf_log_files": [
+      "/var/log/modsec_audit.log",
+      "/var/log/httpd/modsec_audit.log",
+      "/var/log/httpd/modsec_audit.log.*",
+      "/var/log/httpd/error_log",
+      "/var/log/modsecurity/audit.log",
+      "/var/log/nginx/modsec_audit.log",
+      "/var/log/nginx/error.log"
+    ],
+    "syslog": {
+      "enabled": true,
+      "listen": "127.0.0.1:5514",
+      "max_message_bytes": 65507
+    }
+  },
+  "paths": {
+    "state_dir": "/var/lib/ntshield-agent",
+    "spool_dir": "/var/spool/ntshield-agent",
+    "log_file": "/var/log/ntshield/centos6-agent.log"
+  }
+}

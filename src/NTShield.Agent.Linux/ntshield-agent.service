@@ -1,0 +1,21 @@
+[Unit]
+Description=NT Shield Linux Agent
+Documentation=https://github.com/paddman/Shield
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/opt/ntshield/agent/NTShield.Agent.Linux
+WorkingDirectory=/opt/ntshield/agent
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+# Optional: Environment=NTSHIELD_Server__Url=https://10.0.0.5:7443
+Environment=DOTNET_ENVIRONMENT=Production
+# Allow writing logs if appsettings cannot update
+ReadWritePaths=/opt/ntshield /var/log/ntshield
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

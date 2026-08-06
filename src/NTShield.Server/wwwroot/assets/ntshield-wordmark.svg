@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 220" role="img" aria-labelledby="title desc">
+  <title id="title">NT Shield</title>
+  <desc id="desc">NT Shield wordmark with signal bars and protective shield</desc>
+  <defs>
+    <linearGradient id="ntYellow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFD447"/>
+      <stop offset="1" stop-color="#F5B800"/>
+    </linearGradient>
+  </defs>
+  <g fill="url(#ntYellow)">
+    <rect x="24" y="76" width="14" height="52" rx="7"/>
+    <rect x="48" y="58" width="14" height="88" rx="7"/>
+    <circle cx="78" cy="102" r="8"/>
+    <rect x="94" y="70" width="14" height="64" rx="7"/>
+  </g>
+  <text x="132" y="139" fill="#171C26" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="112" font-weight="800" letter-spacing="-8">NT</text>
+  <path d="M365 50 454 92v58c0 54-37 91-89 112-52-21-89-58-89-112V92z"
+        transform="translate(38 -21) scale(.78)" fill="none" stroke="url(#ntYellow)" stroke-width="12" stroke-linejoin="round"/>
+  <text x="400" y="132" fill="#303744" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="66" font-weight="650">Shield</text>
+  <text x="136" y="184" fill="#667085" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="24" font-weight="500" letter-spacing="4">SECURE • PROTECT • PERFORM</text>
+</svg>

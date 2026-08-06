@@ -1,0 +1,170 @@
+{
+  "pack": "NTShield Open Source Signature Pack",
+  "version": "1.0.0",
+  "license": "Community / MITRE ATT&CK mapping — inspired by public Sigma/Snort rule ideas (not binary Snort/Suricata engine)",
+  "signatures": [
+    {
+      "id": "OS-SSH-BRUTE",
+      "name": "SSH authentication failures",
+      "enabled": true,
+      "severity": "High",
+      "category": "credential_access",
+      "mitreTechnique": "T1110",
+      "source": "community",
+      "matchAny": ["Failed password", "Invalid user", "authentication failure", "Failed keyboard-interactive"],
+      "matchAll": [],
+      "keywords": ["sshd", "ssh"]
+    },
+    {
+      "id": "OS-RDP-BRUTE",
+      "name": "RDP / Terminal Services logon failures",
+      "enabled": true,
+      "severity": "High",
+      "category": "credential_access",
+      "mitreTechnique": "T1110",
+      "source": "community",
+      "matchAny": ["4625", "Logon Failure", "logon type 10", "logon type 3", "TerminalServices"],
+      "matchAll": [],
+      "keywords": ["Microsoft-Windows-Security-Auditing", "Winlogon", "RDP"]
+    },
+    {
+      "id": "OS-SMB-ATTACK",
+      "name": "SMB / lateral share access noise",
+      "enabled": true,
+      "severity": "Medium",
+      "category": "lateral_movement",
+      "mitreTechnique": "T1021.002",
+      "source": "community",
+      "matchAny": ["STATUS_LOGON_FAILURE", "STATUS_ACCESS_DENIED", "\\\\ADMIN$", "\\\\C$", "named pipe"],
+      "matchAll": [],
+      "keywords": ["smb", "srv", "LanmanServer"]
+    },
+    {
+      "id": "OS-SQL-BRUTE",
+      "name": "SQL login failures",
+      "enabled": true,
+      "severity": "High",
+      "category": "credential_access",
+      "mitreTechnique": "T1110",
+      "source": "community",
+      "matchAny": ["Login failed for user", "18456", "password did not match", "SQL Server"],
+      "matchAll": [],
+      "keywords": ["MSSQL", "sqlservr", "postgres", "mysql"]
+    },
+    {
+      "id": "OS-WEBSHELL",
+      "name": "Web shell / suspicious web request patterns",
+      "enabled": true,
+      "severity": "Critical",
+      "category": "persistence",
+      "mitreTechnique": "T1505.003",
+      "source": "community",
+      "matchAny": ["cmd.exe", "powershell", "eval(", "base64_decode", "/.asp?", "whoami", "net user"],
+      "matchAll": [],
+      "keywords": ["iis", "apache", "nginx", "w3wp"]
+    },
+    {
+      "id": "OS-IIS-W3WP",
+      "name": "IIS worker / ASP.NET fault indicators",
+      "enabled": true,
+      "severity": "High",
+      "category": "execution",
+      "mitreTechnique": "T1505.003",
+      "source": "community",
+      "matchAny": [
+        "w3wp.exe",
+        "ASP.NET",
+        "HttpException",
+        "Request timed out",
+        "potential dangerous",
+        "ViewState",
+        "web.config",
+        "inetpub",
+        "Application Pool"
+      ],
+      "matchAll": [],
+      "keywords": ["IIS", "W3SVC", "WAS", "ASP.NET"]
+    },
+    {
+      "id": "OS-IIS-AUTH",
+      "name": "IIS / HTTP auth failures",
+      "enabled": true,
+      "severity": "Medium",
+      "category": "credential_access",
+      "mitreTechnique": "T1110",
+      "source": "community",
+      "matchAny": [
+        "401.1",
+        "401.2",
+        "401.3",
+        "Logon failed",
+        "authentication failed",
+        "Unauthorized",
+        "sc-status 401",
+        "sc-status 403"
+      ],
+      "matchAll": [],
+      "keywords": ["IIS", "http", "W3SVC"]
+    },
+    {
+      "id": "OS-MIMIKATZ",
+      "name": "Credential dumping tool indicators",
+      "enabled": true,
+      "severity": "Critical",
+      "category": "credential_access",
+      "mitreTechnique": "T1003",
+      "source": "community",
+      "matchAny": ["mimikatz", "sekurlsa", "lsadump", "procdump", "comsvcs.dll MiniDump"],
+      "matchAll": [],
+      "keywords": []
+    },
+    {
+      "id": "OS-PS-ENC",
+      "name": "Encoded PowerShell",
+      "enabled": true,
+      "severity": "High",
+      "category": "execution",
+      "mitreTechnique": "T1059.001",
+      "source": "community",
+      "matchAny": [" -enc ", " -EncodedCommand", "FromBase64String", "IEX(", "Invoke-Expression"],
+      "matchAll": [],
+      "keywords": ["powershell", "pwsh"]
+    },
+    {
+      "id": "OS-PORTSCAN",
+      "name": "Possible port scan / connection flood",
+      "enabled": true,
+      "severity": "Medium",
+      "category": "discovery",
+      "mitreTechnique": "T1046",
+      "source": "community",
+      "matchAny": ["portscan", "Nmap", "masscan", "SYN flood", "connection refused flood"],
+      "matchAll": [],
+      "keywords": []
+    },
+    {
+      "id": "OS-MALWARE-DROP",
+      "name": "Suspicious download / dropper paths",
+      "enabled": true,
+      "severity": "High",
+      "category": "defense_evasion",
+      "mitreTechnique": "T1105",
+      "source": "community",
+      "matchAny": ["\\AppData\\Local\\Temp\\", "certutil -urlcache", "bitsadmin /transfer", "curl http", "wget http"],
+      "matchAll": [],
+      "keywords": []
+    },
+    {
+      "id": "OS-NTSHIELD-ALERT",
+      "name": "NT Shield agent alert (syslog forward)",
+      "enabled": true,
+      "severity": "High",
+      "category": "agent_telemetry",
+      "mitreTechnique": "",
+      "source": "ntshield",
+      "matchAny": ["NTShield-ALERT", "RuleId=", "ALERT "],
+      "matchAll": [],
+      "keywords": ["NTShield", "ntshield"]
+    }
+  ]
+}
