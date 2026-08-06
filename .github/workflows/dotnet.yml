@@ -1,0 +1,43 @@
+name: NT Shield .NET
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "NTShield.sln"
+      - "Directory.Build.props"
+      - "global.json"
+      - ".github/workflows/dotnet.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "NTShield.sln"
+      - "Directory.Build.props"
+      - "global.json"
+      - ".github/workflows/dotnet.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate Control Center JavaScript
+        run: node --check src/NTShield.Server/wwwroot/app.js
+      - name: Restore
+        run: dotnet restore NTShield.sln
+      - name: Build
+        run: dotnet build NTShield.sln -c Release --no-restore
+      - name: Test
+        run: dotnet test NTShield.sln -c Release --no-build --verbosity normal

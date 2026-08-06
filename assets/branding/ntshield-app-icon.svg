@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">NT Shield application icon</title>
+  <desc id="desc">Yellow protective shield with NT signal mark on a charcoal field</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111722"/>
+      <stop offset="1" stop-color="#2B3445"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFD84A"/>
+      <stop offset="1" stop-color="#F4B500"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="28" stdDeviation="32" flood-color="#000" flood-opacity=".32"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <path d="M512 137 814 276v203c0 188-124 321-302 408-178-87-302-220-302-408V276z"
+        fill="#171E2B" stroke="url(#gold)" stroke-width="45" stroke-linejoin="round" filter="url(#shadow)"/>
+  <g fill="url(#gold)">
+    <rect x="337" y="378" width="42" height="158" rx="21"/>
+    <rect x="405" y="322" width="42" height="270" rx="21"/>
+    <circle cx="486" cy="456" r="25"/>
+    <rect x="527" y="358" width="42" height="196" rx="21"/>
+  </g>
+  <path d="M633 364v225M633 364h68M633 476h58" fill="none" stroke="#FFF" stroke-width="42" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

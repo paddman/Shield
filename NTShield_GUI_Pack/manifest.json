@@ -1,0 +1,296 @@
+{
+  "package": "NTShield_GUI_Pack",
+  "version": "1.1.0",
+  "files": [
+    {
+      "path": "ASSET_NOTE.txt",
+      "size": 384,
+      "sha256": "668983d63c8471c57934c6f7a88e19ffab979981c79f2ce0f28b566e1c6847e5"
+    },
+    {
+      "path": "README_TH.md",
+      "size": 2110,
+      "sha256": "b7c134b5e59b4dc9c0db47f6714b3fc3c7d9225da248429b17069b1885ebb07b"
+    },
+    {
+      "path": "assets/icons/actions.svg",
+      "size": 227,
+      "sha256": "1362865ce00b5ed6e92f21b5d3530833a8cda6317f93f62a477b997cd631d2e8"
+    },
+    {
+      "path": "assets/icons/block.svg",
+      "size": 242,
+      "sha256": "5b7a90461945d0c031e53d4bdde077aebe4010b2fab3f6f46676192e170403b3"
+    },
+    {
+      "path": "assets/icons/capture.svg",
+      "size": 272,
+      "sha256": "84fa48ffa149b6273a441f6c4c577ffb320f51d26448ff5b6709f8c1d0dccc2e"
+    },
+    {
+      "path": "assets/icons/dashboard.svg",
+      "size": 353,
+      "sha256": "20b47bda232711d5d6aa0030b730f068c919e87b3538924745fc5c3de493e239"
+    },
+    {
+      "path": "assets/icons/detections.svg",
+      "size": 293,
+      "sha256": "a7f848cbed233691269c4f43d3330bfc074622c892904300b8d29320b4afdd7c"
+    },
+    {
+      "path": "assets/icons/endpoints.svg",
+      "size": 265,
+      "sha256": "35fc2dc054139c8ce6afc00ce115aa152cf8e77e4be00142e6817b3d868fe84a"
+    },
+    {
+      "path": "assets/icons/evidence.svg",
+      "size": 219,
+      "sha256": "1576ed9bfd31398c2c24d1919b30e5697bb2cad72696b38a375416aa976af2fe"
+    },
+    {
+      "path": "assets/icons/export.svg",
+      "size": 260,
+      "sha256": "bfcf022ff5454455669bf1158b670c094ccf8874a5aeb46dddac0c310369b5be"
+    },
+    {
+      "path": "assets/icons/incidents.svg",
+      "size": 308,
+      "sha256": "d94805e0b35fa0768433e1eb6f18182b6c69e8500cc1050d92f246c5b0de8ef9"
+    },
+    {
+      "path": "assets/icons/quarantine.svg",
+      "size": 268,
+      "sha256": "c62039aea7ab1e61cb4c0fe0851a6401b15920acdc8a54c40ac0fdb8d7e254ee"
+    },
+    {
+      "path": "assets/icons/rules.svg",
+      "size": 270,
+      "sha256": "43dabf4ce450e690b769dbc764adb0c4e5973aaf621933892dff1ec11baeff71"
+    },
+    {
+      "path": "assets/icons/settings.svg",
+      "size": 452,
+      "sha256": "1c587d144b2afb09ef7a0ec4e330f27046bc0c44261090e2e9c837988352aafa"
+    },
+    {
+      "path": "assets/icons/shield.svg",
+      "size": 279,
+      "sha256": "1d49bd4c446b1f0067939cae0c00a43ef43abb62aaa61f9c64daf0a672109b45"
+    },
+    {
+      "path": "assets/ntshield/ntshield_avatar_128.png",
+      "size": 31893,
+      "sha256": "bfe984ce07de0be554331a9870def6a85722e0d7fe446745dcaf3e27c1f96508"
+    },
+    {
+      "path": "assets/ntshield/ntshield_avatar_256.png",
+      "size": 115118,
+      "sha256": "07fbe0f50dfe4ad9287ce0b1b8a8b17aaae845a7644c51563679a711998bad54"
+    },
+    {
+      "path": "assets/ntshield/ntshield_avatar_512.png",
+      "size": 313296,
+      "sha256": "e260cf4f470900e9a1fdfbb57707ed5ea9bcc24067223856ee136aa366824c2b"
+    },
+    {
+      "path": "assets/ntshield/ntshield_clean_pose.png",
+      "size": 195478,
+      "sha256": "8bada176b16823511550dc25fa8a262827fa5167c244541ddd24afd7ee08e067"
+    },
+    {
+      "path": "assets/ntshield/ntshield_dashboard_pose.png",
+      "size": 209191,
+      "sha256": "d5004e033ea8d7a7558f6fcd9bf29bdfd3232e84185a1e32d51a2f9c474acc14"
+    },
+    {
+      "path": "assets/ntshield/ntshield_full.png",
+      "size": 195478,
+      "sha256": "8bada176b16823511550dc25fa8a262827fa5167c244541ddd24afd7ee08e067"
+    },
+    {
+      "path": "assets/ntshield/ntshield_half.png",
+      "size": 195478,
+      "sha256": "8bada176b16823511550dc25fa8a262827fa5167c244541ddd24afd7ee08e067"
+    },
+    {
+      "path": "assets/ntshield/ntshield_logo_128.png",
+      "size": 17149,
+      "sha256": "e17552ed1ad4e5348fc078121d45a39320b1266ccef9b1779f54d39c576661eb"
+    },
+    {
+      "path": "assets/ntshield/ntshield_logo_256.png",
+      "size": 32114,
+      "sha256": "5f14b604708acb6aba93b80570904d26a99a953b60d53308b0395df69a10f1f9"
+    },
+    {
+      "path": "assets/ntshield/ntshield_logo_32.png",
+      "size": 3640,
+      "sha256": "bdfbeb4c3192a138857ef93be5446a2fc3c96e22a8a8b3426ecb37670731b989"
+    },
+    {
+      "path": "assets/ntshield/ntshield_logo_64.png",
+      "size": 8123,
+      "sha256": "2f919f2d2aa63b11b365c2dfcf79cac4f651fac8f97335e92322bbddc6a1f657"
+    },
+    {
+      "path": "assets/ntshield/ntshield_stop_pose.png",
+      "size": 195478,
+      "sha256": "8bada176b16823511550dc25fa8a262827fa5167c244541ddd24afd7ee08e067"
+    },
+    {
+      "path": "assets/tokens/colors.json",
+      "size": 343,
+      "sha256": "fb78c925f96be5f82433f764627048dcf0c733e493c770809ef10806c2366be8"
+    },
+    {
+      "path": "assets/ui-reference/dashboard_annotated.png",
+      "size": 2467342,
+      "sha256": "9a3b325243d6fe7f50c666f73b5d0b4b2bdd1a3670200346c9853c9d22b06306"
+    },
+    {
+      "path": "assets/ui-reference/dashboard_full.png",
+      "size": 2467342,
+      "sha256": "9a3b325243d6fe7f50c666f73b5d0b4b2bdd1a3670200346c9853c9d22b06306"
+    },
+    {
+      "path": "assets/ui-reference/panels/active_incidents.png",
+      "size": 146568,
+      "sha256": "f28b416600e992a24b2dc97bb80940784eb330fb64f3d1232006f079397d44eb"
+    },
+    {
+      "path": "assets/ui-reference/panels/analytics_widgets.png",
+      "size": 147801,
+      "sha256": "1fa8bf09d6f363b0b2f814c786346a8b1981b6d4e3639b1467fc6c0f002e7739"
+    },
+    {
+      "path": "assets/ui-reference/panels/failed_login_chart.png",
+      "size": 108682,
+      "sha256": "151f48a520e2def1982e312e2cf22b11e07dbe65f60264ed170c4eb39cd35c8a"
+    },
+    {
+      "path": "assets/ui-reference/panels/header_status.png",
+      "size": 103585,
+      "sha256": "2dfb60f3f2d432bf8ae842be05f5e069486e3466a12b2941e4ec43f4f7a0bf81"
+    },
+    {
+      "path": "assets/ui-reference/panels/incident_detail.png",
+      "size": 282455,
+      "sha256": "675cecaf7a317abcbc3ba721ea15772d2ddea1d78a3f779a4ec3484e32ae9ff2"
+    },
+    {
+      "path": "assets/ui-reference/panels/ntshield_assistant_panel.png",
+      "size": 208764,
+      "sha256": "562f2d51d49f1d5b51369d452426cef67bc23a0a807d3c8674278e2bbfc07652"
+    },
+    {
+      "path": "assets/ui-reference/panels/quick_actions.png",
+      "size": 167825,
+      "sha256": "c33012c379bc55a63e7b6921ef851e390754aa3e0be5ad412af6157ea112de57"
+    },
+    {
+      "path": "assets/ui-reference/panels/recent_actions.png",
+      "size": 174195,
+      "sha256": "8b3f52e9813cf55fd13e36a71548133936ed026f79b644e62cb30d69a4ef3405"
+    },
+    {
+      "path": "assets/ui-reference/panels/sidebar.png",
+      "size": 363704,
+      "sha256": "b64d306ef8b08937613de6ac0b4e98a715f02a4a0ba2827660af4a7b790013bc"
+    },
+    {
+      "path": "assets/ui-reference/panels/summary_cards.png",
+      "size": 379280,
+      "sha256": "1c9deacd17ffe5ed01a4f523e1c42474bae597c3299dc44052357e8460ae506e"
+    },
+    {
+      "path": "assets/ui-reference/ui_breakdown.png",
+      "size": 2467342,
+      "sha256": "9a3b325243d6fe7f50c666f73b5d0b4b2bdd1a3670200346c9853c9d22b06306"
+    },
+    {
+      "path": "docs/COMPONENTS_TH.md",
+      "size": 1471,
+      "sha256": "aaa43c05253a00d3858746f52f3441136f47b9deee25a08a840ff73ac59a2af0"
+    },
+    {
+      "path": "docs/CROP_MAP.md",
+      "size": 587,
+      "sha256": "d9545ccd33ada16f9e517f364d43354451744109e05505f8c0486b3aaa276b3e"
+    },
+    {
+      "path": "docs/INTEGRATION_WPF_TH.md",
+      "size": 1594,
+      "sha256": "3809cd64eda3d76030f32598a136b39d136756c7e03d5b01fb5444ba6f71982a"
+    },
+    {
+      "path": "preview/index.html",
+      "size": 4453,
+      "sha256": "38a7d7244bd05f00043087b23fd8461b325588f8a17b56ca1f07447e1477ce5b"
+    },
+    {
+      "path": "preview/preview.png",
+      "size": 2467342,
+      "sha256": "9a3b325243d6fe7f50c666f73b5d0b4b2bdd1a3670200346c9853c9d22b06306"
+    },
+    {
+      "path": "preview/styles.css",
+      "size": 3934,
+      "sha256": "2e689229463e5eb11bef34be64cc22d3a719e5df7c0fcb9497280e3ae8652e56"
+    },
+    {
+      "path": "wpf/NTShield.Gui/App.xaml",
+      "size": 430,
+      "sha256": "08fdcc62fd5137c1cdb833d81010677a4416a648d2d08714e93c63f2e82cad81"
+    },
+    {
+      "path": "wpf/NTShield.Gui/App.xaml.cs",
+      "size": 92,
+      "sha256": "d2785d26348055e07565aee9fcb1185672d5a8d2e206c46d5ceebee59f96f9da"
+    },
+    {
+      "path": "wpf/NTShield.Gui/Assets/ntshield_avatar_256.png",
+      "size": 115118,
+      "sha256": "c6aaea02fca70ec1eea2c1ec54140ac09c3dc17fa8f4026562fbdc5932955c76"
+    },
+    {
+      "path": "wpf/NTShield.Gui/Assets/ntshield_full.png",
+      "size": 195478,
+      "sha256": "8bada176b16823511550dc25fa8a262827fa5167c244541ddd24afd7ee08e067"
+    },
+    {
+      "path": "wpf/NTShield.Gui/Assets/ntshield_logo_64.png",
+      "size": 8123,
+      "sha256": "aaef462ea36035c8a0dd8744102c6d0e11e4feb3f4390b646605539d31931177"
+    },
+    {
+      "path": "wpf/NTShield.Gui/MainWindow.xaml",
+      "size": 16431,
+      "sha256": "77c9bf791fe7ff9bf7601725f8abe78075a7e63eebc3d5a1d2782ca615268109"
+    },
+    {
+      "path": "wpf/NTShield.Gui/MainWindow.xaml.cs",
+      "size": 2436,
+      "sha256": "f3383f8ccb0c6be1585379c80918ab53a89699483755ed488bec1bc2b97c6207"
+    },
+    {
+      "path": "wpf/NTShield.Gui/NTShield.Gui.csproj",
+      "size": 2375,
+      "sha256": "a8d2bc0307d8a5a6c9eece66ad33dbe266ac8e94173da94599b361f25c066ff7"
+    },
+    {
+      "path": "wpf/NTShield.Gui/Properties/AssemblyInfo.cs",
+      "size": 505,
+      "sha256": "a4caa735758820c79a859ff19a8e4829454ada8d4a44bfaf9bb61187e8009c12"
+    },
+    {
+      "path": "wpf/NTShield.Gui/Theme.xaml",
+      "size": 3445,
+      "sha256": "af7b0f227adec1760a014eda33e30f8ce55ffefb56f2ad03f3202c4a33c74ada"
+    },
+    {
+      "path": "wpf/NTShield.sln",
+      "size": 892,
+      "sha256": "65fe8b358e09c4746d20bfeb8ec1e287e2230dd6e64adb2e15d3c94e88dd5f5b"
+    }
+  ]
+}

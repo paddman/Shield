@@ -1,0 +1,34 @@
+NT Shield Central
+=======================
+Product      : NT Shield Central
+Version      : (see GET /api/v1/health → version)
+Service name : NTShieldCentral
+Default URL  : https://localhost:7443
+Syslog UDP   : 5514
+Install dir  : C:\Program Files\NT Shield Central
+Data dir     : C:\ProgramData\NTShield\Server
+Database     : C:\ProgramData\NTShield\Server\central.db (SQLite)
+Signatures   : C:\ProgramData\NTShield\Server\signatures\opensource-signatures.json
+
+Health check (includes version):
+  GET https://localhost:7443/api/v1/health
+  → { "status":"ok", "version":"x.y.z", "product":"NT Shield Central", ... }
+Agents       :
+  GET https://localhost:7443/api/v1/agents
+  → each agent has agentVersion, platform, online
+Signatures   :
+  GET https://localhost:7443/api/v1/signatures
+
+Agent  Server.Url  = https://<this-host>:7443
+Agent  SyslogHost  = <this-host>  SyslogPort=5514  SyslogEnabled=true
+Dashboard Settings = same HTTPS URL
+
+Start / stop service (Admin PowerShell):
+  Start-Service NTShieldCentral
+  Stop-Service NTShieldCentral
+  Get-Service NTShieldCentral
+
+Logs:
+  C:\ProgramData\NTShield\Server\logs
+
+(This file is updated with the real host/port after install.)

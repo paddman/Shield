@@ -1,0 +1,48 @@
+name: CentOS 6 legacy agent
+
+on:
+  push:
+    paths:
+      - "src/NTShield.Agent.CentOS6/**"
+      - ".github/workflows/centos6-agent.yml"
+  pull_request:
+    paths:
+      - "src/NTShield.Agent.CentOS6/**"
+      - ".github/workflows/centos6-agent.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: src/NTShield.Agent.CentOS6
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.20.14"
+          cache: false
+      - name: Unit tests
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Static amd64 build
+        run: make build-amd64 VERSION=${GITHUB_SHA::12}
+      - name: Static 386 build
+        run: make build-386 VERSION=${GITHUB_SHA::12}
+      - name: Verify static binaries
+        run: |
+          ! readelf -l dist/ntshield-agent-centos6-amd64 | grep -q INTERP
+          ! readelf -l dist/ntshield-agent-centos6-386 | grep -q INTERP
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ntshield-centos6-agent
+          path: |
+            src/NTShield.Agent.CentOS6/dist/ntshield-agent-centos6-amd64
+            src/NTShield.Agent.CentOS6/dist/ntshield-agent-centos6-386
+          if-no-files-found: error

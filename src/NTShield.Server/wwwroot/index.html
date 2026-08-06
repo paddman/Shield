@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#171c26">
+  <meta name="description" content="NT Shield — Unified AI Cyber Defense as a Service">
+  <title>NT Shield Control Center</title>
+  <link rel="icon" type="image/svg+xml" href="assets/ntshield-app-icon.svg">
+  <link rel="stylesheet" href="assets/fonts/fonts.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="loginView" class="login-shell">
+    <section class="login-story" aria-labelledby="storyTitle">
+      <img class="story-logo" src="assets/ntshield-wordmark.svg" alt="NT Shield">
+      <p class="eyebrow">UNIFIED AI CYBER DEFENSE AS A SERVICE</p>
+      <h1 id="storyTitle">เห็นภัยไว<br>รับมือได้ในที่เดียว</h1>
+      <p class="story-copy">รวม Agent, Central, Threat Correlation และ AI Analyst เพื่อให้ทีมดูแลระบบเห็นเหตุการณ์สำคัญและตัดสินใจได้เร็วขึ้น</p>
+      <div class="promise-list" aria-label="NT Shield capabilities">
+        <article><span aria-hidden="true">✓</span><div><strong>Secure</strong><small>เฝ้าระวัง Endpoint และ Server หลายระบบ</small></div></article>
+        <article><span aria-hidden="true">◎</span><div><strong>Protect</strong><small>เชื่อมโยง Incident และตอบสนองแบบมีผู้อนุมัติ</small></div></article>
+        <article><span aria-hidden="true">▥</span><div><strong>Perform</strong><small>ภาพรวมเดียวสำหรับทีม SOC และผู้ดูแลระบบ</small></div></article>
+      </div>
+    </section>
+
+    <section class="login-panel" aria-labelledby="loginTitle">
+      <form id="loginForm" class="login-card" novalidate>
+        <img class="login-logo" src="assets/ntshield-wordmark.svg" alt="NT Shield">
+        <p class="login-tagline">Secure <i>•</i> Protect <i>•</i> Perform</p>
+        <div class="login-heading">
+          <p class="eyebrow">CONTROL CENTER</p>
+          <h2 id="loginTitle">เข้าสู่ระบบ</h2>
+          <p>เชื่อมต่อกับ NT Shield Central ที่ <code id="centralOrigin"></code></p>
+        </div>
+
+        <label class="field">
+          <span>ชื่อผู้ใช้งาน</span>
+          <span class="input-wrap"><b aria-hidden="true">♙</b><input id="username" name="username" autocomplete="username" placeholder="SOC Analyst" value="SOC Analyst"></span>
+        </label>
+        <label class="field">
+          <span>Operator API Key</span>
+          <span class="input-wrap"><b aria-hidden="true">▣</b><input id="apiKey" name="apiKey" type="password" autocomplete="current-password" placeholder="ไม่ต้องกรอกเมื่อปิด RequireAuth"><button id="revealKey" type="button" class="reveal" aria-label="แสดงหรือซ่อน API key">◉</button></span>
+        </label>
+
+        <div class="login-options">
+          <label><input id="rememberKey" type="checkbox"> จดจำในเบราว์เซอร์นี้</label>
+          <button id="forgotKey" type="button" class="link-button">หา Key ได้ที่ไหน?</button>
+        </div>
+        <p id="loginMessage" class="form-message" role="status" aria-live="polite"></p>
+        <button id="loginButton" class="primary-login" type="submit"><span>LOGIN</span><b aria-hidden="true">→</b></button>
+        <div class="or"><span>หรือ</span></div>
+        <button id="ntAccountButton" class="nt-account" type="button"><span aria-hidden="true">♢</span> Login with NT Account</button>
+        <p class="login-foot">NT Shield Central <span>•</span> Local-first control plane</p>
+      </form>
+    </section>
+  </main>
+
+  <div id="dashboardView" class="dashboard-shell" hidden>
+    <header class="topbar">
+      <button id="mobileMenu" class="icon-button mobile-only" aria-label="เปิดเมนู">☰</button>
+      <img src="assets/ntshield-wordmark.svg" alt="NT Shield" class="top-logo">
+      <nav class="top-nav" aria-label="เมนูหลัก">
+        <button class="active" data-nav="overview">Dashboard</button>
+        <button data-nav="incidents">Incidents</button>
+        <button data-nav="threats">Threats</button>
+        <button data-nav="assets">Assets</button>
+        <button data-nav="analyst">AI Analyst</button>
+      </nav>
+      <div class="operator">
+        <span id="connectionDot" class="live-dot"></span>
+        <div><small>Welcome,</small><strong id="operatorName">SOC Analyst</strong></div>
+        <button id="refreshButton" class="icon-button" aria-label="รีเฟรชข้อมูล">↻</button>
+        <button id="logoutButton" class="avatar" aria-label="ออกจากระบบ">SO</button>
+      </div>
+    </header>
+
+    <aside id="sidebar" class="sidebar">
+      <nav aria-label="เมนูด้านข้าง">
+        <button class="active" data-nav="overview"><span>⌂</span> Overview</button>
+        <button data-nav="incidents"><span>⚠</span> Incidents <b id="incidentNavCount">0</b></button>
+        <button data-nav="threats"><span>⌁</span> Threats</button>
+        <button data-nav="assets"><span>▣</span> Assets</button>
+        <button data-nav="analyst"><span>AI</span> AI Analyst</button>
+        <button data-nav="settings"><span>⚙</span> Settings</button>
+      </nav>
+      <section class="sidebar-guardian" aria-label="system status">
+        <img src="assets/ntshield-platform-hero.png" alt="" aria-hidden="true">
+        <div>
+          <strong>NT Shield Status <i id="sidebarStatusDot"></i></strong>
+          <p id="sidebarStatus">กำลังเชื่อมต่อ…</p>
+          <small id="lastUpdated">ยังไม่มีข้อมูล</small>
+        </div>
+      </section>
+    </aside>
+
+    <main class="workspace">
+      <section class="page active" data-page="overview" aria-labelledby="overviewTitle">
+        <div class="page-heading">
+          <div><p class="eyebrow">LIVE CONTROL CENTER</p><h1 id="overviewTitle">Security Overview</h1><p id="overviewSub">ข้อมูลจริงจาก NT Shield Central</p></div>
+          <div class="range-pill"><span class="live-dot"></span> Live <span id="centralVersion">Central v—</span></div>
+        </div>
+
+        <div class="overview-grid">
+          <article class="card posture-card">
+            <div class="card-title"><h2>Security Posture</h2><span title="คำนวณจาก incident และสถานะ agent">ⓘ</span></div>
+            <div id="postureGauge" class="gauge" style="--score:0"><div><strong id="postureScore">0</strong><small>/100</small></div></div>
+            <p id="postureLabel" class="posture-label">กำลังประเมิน</p>
+            <div class="mini-metrics">
+              <span>Identify <b id="identifyScore">—</b></span>
+              <span>Protect <b id="protectScore">—</b></span>
+              <span>Detect <b id="detectScore">—</b></span>
+              <span>Respond <b id="respondScore">—</b></span>
+            </div>
+          </article>
+
+          <article class="card attack-card">
+            <div class="card-title"><h2>Live Attack Surface</h2><span id="attackWindow">Central telemetry</span></div>
+            <div class="attack-visual" aria-label="ภาพรวมสัญญาณการโจมตี">
+              <div class="attack-shield">⌾</div>
+              <i style="--x:17%;--y:36%;--delay:.2s"></i><i style="--x:38%;--y:62%;--delay:1s"></i><i style="--x:61%;--y:29%;--delay:1.7s"></i><i style="--x:78%;--y:68%;--delay:2.4s"></i><i style="--x:87%;--y:31%;--delay:3s"></i>
+              <svg viewBox="0 0 600 240" preserveAspectRatio="none" aria-hidden="true"><path d="M45 155 Q180 30 318 132 T555 73"/><path d="M82 73 Q265 226 520 120"/></svg>
+            </div>
+            <div class="attack-stats">
+              <span><b id="totalSignals">0</b><small>Signals</small></span>
+              <span><b id="totalThreats">0</b><small>Threats</small></span>
+              <span><b id="totalAgents">0</b><small>Assets</small></span>
+              <span><b id="totalSignatures">0</b><small>Signatures</small></span>
+            </div>
+          </article>
+
+          <article class="card active-card">
+            <div class="card-title"><h2>Active Incidents <em id="activeIncidentCount">0</em></h2><button data-nav="incidents">View all →</button></div>
+            <div id="incidentPreview" class="incident-list empty-state">ยังไม่มี Incident</div>
+          </article>
+
+          <article class="card assets-card">
+            <div class="card-title"><h2>Asset Overview</h2><button data-nav="assets">View all →</button></div>
+            <div class="asset-overview">
+              <div id="assetDonut" class="donut"><span><b id="assetTotal">0</b><small>Assets</small></span></div>
+              <div class="legend"><span><i class="win"></i>Windows <b id="windowsCount">0</b></span><span><i class="linux"></i>Linux <b id="linuxCount">0</b></span><span><i class="offline"></i>Offline <b id="offlineCount">0</b></span></div>
+            </div>
+          </article>
+
+          <article class="card trend-card">
+            <div class="card-title"><h2>Incidents Over Time</h2><span>Last 7 days</span></div>
+            <div class="trend-wrap"><svg id="trendChart" viewBox="0 0 700 210" preserveAspectRatio="none" role="img" aria-label="Incident trend"><g class="grid-lines"><line x1="20" y1="30" x2="680" y2="30"/><line x1="20" y1="95" x2="680" y2="95"/><line x1="20" y1="160" x2="680" y2="160"/></g><polygon id="trendArea" points="20,160 680,160"/><polyline id="trendLine" points="20,160 680,160"/></svg><div id="trendLabels" class="trend-labels"></div></div>
+          </article>
+
+          <article class="card severity-card">
+            <div class="card-title"><h2>Severity Breakdown</h2><span>Live data</span></div>
+            <div class="severity-wrap"><div id="severityDonut" class="severity-donut"><span><b id="severityTotal">0</b><small>Total</small></span></div><div id="severityLegend" class="legend severity-legend"></div></div>
+          </article>
+
+          <article class="card analyst-card">
+            <div class="analyst-head"><span>AI</span><div><h2>AI Analyst Insight</h2><p>สรุปสิ่งที่ควรตรวจสอบก่อน</p></div></div>
+            <ul id="analystInsights"><li>กำลังรอข้อมูลจาก Central…</li></ul>
+            <button data-nav="analyst">เปิด AI Analyst →</button>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" data-page="incidents" aria-labelledby="incidentsTitle">
+        <div class="page-heading"><div><p class="eyebrow">INVESTIGATE</p><h1 id="incidentsTitle">Incidents</h1><p>เหตุการณ์ที่ Central เชื่อมโยงจากหลาย Agent</p></div><span id="incidentPageCount" class="count-pill">0 incidents</span></div>
+        <article class="card table-card"><div class="table-toolbar"><input id="incidentSearch" type="search" placeholder="ค้นหา Incident, host, IP หรือ user"><select id="severityFilter"><option value="">ทุกระดับ</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></div><div class="table-scroll"><table><thead><tr><th>Severity</th><th>Incident</th><th>Source</th><th>Destination</th><th>Time</th></tr></thead><tbody id="incidentTable"></tbody></table></div></article>
+      </section>
+
+      <section class="page" data-page="threats" aria-labelledby="threatsTitle">
+        <div class="page-heading"><div><p class="eyebrow">CORRELATE</p><h1 id="threatsTitle">Threat Campaigns</h1><p>เส้นทางและรูปแบบการโจมตีข้ามเครื่อง</p></div><span id="threatPageCount" class="count-pill">0 threats</span></div>
+        <div id="threatCards" class="collection-grid empty-state">ยังไม่มี Threat Campaign</div>
+      </section>
+
+      <section class="page" data-page="assets" aria-labelledby="assetsTitle">
+        <div class="page-heading"><div><p class="eyebrow">PROTECT</p><h1 id="assetsTitle">Protected Assets</h1><p>Agent ที่ลงทะเบียนกับ Central</p></div><span id="assetPageCount" class="count-pill">0 assets</span></div>
+        <article class="card table-card"><div class="table-toolbar"><input id="assetSearch" type="search" placeholder="ค้นหา hostname, platform หรือ agent ID"><span id="onlineSummary">0 online</span></div><div class="table-scroll"><table><thead><tr><th>Status</th><th>Host</th><th>Platform</th><th>Version</th><th>Last seen</th></tr></thead><tbody id="assetTable"></tbody></table></div></article>
+      </section>
+
+      <section class="page" data-page="analyst" aria-labelledby="analystTitle">
+        <div class="page-heading"><div><p class="eyebrow">EXPLAINABLE AI</p><h1 id="analystTitle">NT Shield AI Analyst</h1><p>คำแนะนำจากข้อมูลจริง โดยยังให้คนอนุมัติการตอบสนอง</p></div><span class="count-pill">Human-in-the-loop</span></div>
+        <div class="analyst-layout"><article class="card ai-summary"><div class="ai-orb">AI</div><h2>สิ่งที่ควรทำตอนนี้</h2><ul id="analystPageInsights"><li>กำลังประเมินข้อมูล…</li></ul></article><article class="card guardrail-card"><h2>ขอบเขตความปลอดภัย</h2><p>AI Analyst วิเคราะห์และเสนอแนวทาง แต่ไม่สั่ง block IP, isolate host, stop service หรือ kill process โดยไม่มีขั้นตอนอนุมัติของ Operator</p><div class="guardrail-flow"><span>Telemetry</span><b>→</b><span>AI Analysis</span><b>→</b><span>Operator Approval</span><b>→</b><span>Agent Action</span></div></article></div>
+      </section>
+
+      <section class="page" data-page="settings" aria-labelledby="settingsTitle">
+        <div class="page-heading"><div><p class="eyebrow">CONFIGURE</p><h1 id="settingsTitle">Settings</h1><p>การเชื่อมต่อของ Control Center</p></div></div>
+        <article class="card settings-card"><h2>Central connection</h2><label>Central URL<input id="settingsOrigin" disabled></label><label>Operator API Key<input id="settingsApiKey" type="password" placeholder="ใส่ Key ใหม่"></label><label class="checkbox-row"><input id="settingsRemember" type="checkbox"> จดจำ Key ในเบราว์เซอร์นี้</label><div><button id="saveSettings" class="button-primary">บันทึกและเชื่อมต่อใหม่</button></div><p>Key ถูกส่งไปยัง Central ผ่าน HTTPS header และเก็บเฉพาะใน session storage เว้นแต่เลือก “จดจำ”</p></article>
+      </section>
+    </main>
+
+    <aside class="feed-panel">
+      <div class="card-title"><h2>Threat Feed</h2><span><i class="live-dot"></i> Live</span></div>
+      <div id="threatFeed" class="feed-list empty-state">ยังไม่มีข้อมูล</div>
+      <div class="feed-intel"><h3>Threat Intelligence</h3><span><b id="feedSignatures">0</b> signatures loaded</span><span><b id="feedAgents">0</b> protected assets</span><span><b id="feedOnline">0</b> agents online</span></div>
+    </aside>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js" defer></script>
+</body>
+</html>

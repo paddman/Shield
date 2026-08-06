@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>NTShield.Transport</RootNamespace>
+    <Description>HTTPS/mTLS transport to central server</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\NTShield.Core\NTShield.Core.csproj" />
+    <ProjectReference Include="..\NTShield.Shared\NTShield.Shared.csproj" />
+  </ItemGroup>
+</Project>

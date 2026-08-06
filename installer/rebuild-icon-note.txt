@@ -1,0 +1,6 @@
+# Rebuild classic ICO from imggui master art
+param([string]$Source = "imggui\400e0843-3d97-4810-8e39-668ab9d08c88.png")
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Drawing
+# load IcoWriter from previous session if needed - call build-setup after
+Write-Host "Use installer\build-setup.ps1 after updating assets\icons\NTShield.ico"

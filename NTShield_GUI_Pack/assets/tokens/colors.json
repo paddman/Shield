@@ -1,0 +1,16 @@
+{
+  "brandYellow": "#FFC400",
+  "brandGoldDark": "#D89F00",
+  "electricBlue": "#1CC0FF",
+  "navy": "#171C26",
+  "navy2": "#252D3B",
+  "background": "#F5F7FA",
+  "surface": "#FFFFFF",
+  "border": "#E5E7EB",
+  "text": "#171C26",
+  "muted": "#6C7892",
+  "success": "#18B86B",
+  "warning": "#FF9F1A",
+  "danger": "#F04444",
+  "purple": "#6F3FF5"
+}
