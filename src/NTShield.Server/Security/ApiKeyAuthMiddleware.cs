@@ -1,5 +1,6 @@
 using System.Text.Json;
 using NTShield.Server.Data;
+using NTShield.Server.LLM;
 using Microsoft.Extensions.Options;
 
 namespace NTShield.Server.Security;
@@ -22,7 +23,11 @@ public sealed class ApiKeyAuthMiddleware
         _logger = logger;
     }
 
-    public async Task InvokeAsync(HttpContext ctx, IOptions<SecurityOptions> securityOpt, ICentralStore store)
+    public async Task InvokeAsync(
+        HttpContext ctx,
+        IOptions<SecurityOptions> securityOpt,
+        ICentralStore store,
+        LlmGatewayService llmGateway)
     {
         var security = securityOpt.Value;
         var path = ctx.Request.Path.Value ?? "";
@@ -40,6 +45,24 @@ public sealed class ApiKeyAuthMiddleware
         {
             ctx.Items[PrincipalItem] = "enroll";
             await _next(ctx);
+            return;
+        }
+
+        // LLM proxy tokens are separate from operator and Agent keys. They are
+        // always required, including when Central is running in soft-auth mode.
+        if (IsLlmProxyPath(path))
+        {
+            var llmToken = GetLlmToken(ctx);
+            var authenticated = await llmGateway.AuthenticateTokenAsync(llmToken);
+            if (authenticated is not null)
+            {
+                ctx.Items[PrincipalItem] = "llm-client";
+                ctx.Items["NTShieldLlmTokenId"] = authenticated.TokenId;
+                await _next(ctx);
+                return;
+            }
+
+            await FailAsync(ctx, store, "invalid_llm_token", path);
             return;
         }
 
@@ -142,6 +165,18 @@ public sealed class ApiKeyAuthMiddleware
         return null;
     }
 
+    private static string? GetLlmToken(HttpContext ctx)
+    {
+        if (ctx.Request.Headers.TryGetValue("X-NTShield-LLM-Token", out var explicitToken) &&
+            !string.IsNullOrWhiteSpace(explicitToken))
+            return explicitToken.ToString().Trim();
+
+        var auth = ctx.Request.Headers.Authorization.ToString();
+        return auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            ? auth["Bearer ".Length..].Trim()
+            : null;
+    }
+
     private static bool IsPublic(string path) =>
         path.Equals("/health", StringComparison.OrdinalIgnoreCase) ||
         path.Equals("/api/v1/health", StringComparison.OrdinalIgnoreCase);
@@ -152,6 +187,9 @@ public sealed class ApiKeyAuthMiddleware
         path.StartsWith("/api/v1/ingest", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/api/v1/events/", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/api/v1/connections/", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsLlmProxyPath(string path) =>
+        path.StartsWith("/api/v1/llm/v1/", StringComparison.OrdinalIgnoreCase);
 
     private static bool FixedTimeEquals(string a, string b)
     {
