@@ -11,6 +11,7 @@ It combines:
 - guarded human-approved response recommendations
 - Silent Hunter deception tokens
 - multi-tenant keys, feedback, audit and usage metering
+- Central LLM Gateway with expiring Agent tokens and server-side upstream forwarding
 - NT Shield Central incident bridge
 - monthly report and read-only threat-hunt APIs
 
@@ -33,3 +34,5 @@ curl -X POST http://127.0.0.1:8088/v1/incidents/analyze \
 ```
 
 Full architecture and dashboard integration: [`docs/ntshield-brain-ai.md`](docs/ntshield-brain-ai.md).
+
+For the Central-side token management page and proxy route, see the root README section [LLM Gateway flow](README.md#llm-gateway-flow).
