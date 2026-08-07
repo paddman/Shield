@@ -13,7 +13,7 @@ services:
       NTSHIELD_LLM_ENABLED: ${NTSHIELD_LLM_ENABLED:-true}
       NTSHIELD_LLM_BASE_URL: ${NTSHIELD_LLM_BASE_URL:-http://host.docker.internal:8000/v1}
       NTSHIELD_LLM_API_KEY: ${NTSHIELD_LLM_API_KEY:-local}
-      NTSHIELD_LLM_MODEL: ${NTSHIELD_LLM_MODEL:-qwen3.5-9b}
+      NTSHIELD_LLM_MODEL: ${NTSHIELD_LLM_MODEL:-qwen3.5:9b}
       NTSHIELD_LLM_ENABLE_THINKING: ${NTSHIELD_LLM_ENABLE_THINKING:-false}
       NTSHIELD_ANALYSIS_MODE: ${NTSHIELD_ANALYSIS_MODE:-multi_agent}
       NTSHIELD_TENANTS_JSON: ${NTSHIELD_TENANTS_JSON:-[{"tenant_id":"demo","name":"NT Shield Demo","api_key":"change-me","central_verify_tls":false}]}
