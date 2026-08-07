@@ -221,12 +221,24 @@ The hit endpoint deliberately does not reveal whether a token was valid. Valid h
 ```env
 NTSHIELD_LLM_BASE_URL=http://10.0.0.20:8000/v1
 NTSHIELD_LLM_API_KEY=local
-NTSHIELD_LLM_MODEL=qwen3.5-9b
+NTSHIELD_LLM_MODEL=qwen3.5:9b
 NTSHIELD_ANALYSIS_MODE=multi_agent
 NTSHIELD_LLM_ENABLE_THINKING=false
 ```
 
 `multi_agent` runs three specialists in parallel and then one commander synthesis. Use `single` when low latency matters more than the extra analysis pass.
+
+### Route the Brain through Central LLM Gateway
+
+After creating a token in **Control Center → LLM Gateway**, the Brain can use Central as its only model endpoint. The Central server validates the token and forwards the request to the configured upstream model server:
+
+```env
+NTSHIELD_LLM_BASE_URL=https://<CENTRAL>:7443/api/v1/llm/v1
+NTSHIELD_LLM_API_KEY=ntllm_<issued-token>
+NTSHIELD_LLM_MODEL=qwen3.5:9b
+```
+
+Do not put the Central token in a committed file. Keep it in the deployment environment or an ignored `.env` file.
 
 ## Controlled acceptance evaluation
 
