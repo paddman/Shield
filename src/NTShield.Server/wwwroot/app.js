@@ -58,10 +58,6 @@ function bindLogin() {
     input.type = input.type === "password" ? "text" : "password";
   });
 
-  $("#forgotKey").addEventListener("click", () => {
-    toast("ดู OperatorApiKey ที่ C:\\ProgramData\\NTShield\\Server\\secrets.json บนเครื่อง Central");
-  });
-
   $("#ntAccountButton").addEventListener("click", () => {
     toast("NT Account SSO ยังต้องตั้งค่า OIDC/SAML ใน Central ก่อนใช้งาน");
   });
