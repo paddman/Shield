@@ -30,7 +30,7 @@ The LLM uses the existing settings:
 NTSHIELD_LLM_ENABLED=true
 NTSHIELD_LLM_BASE_URL=http://127.0.0.1:8000/v1
 NTSHIELD_LLM_API_KEY=local
-NTSHIELD_LLM_MODEL=qwen3.5-9b
+NTSHIELD_LLM_MODEL=qwen3.5:9b
 ```
 
 Optional code-review limits default to:
@@ -78,7 +78,7 @@ When the LLM is disabled, unreachable or returns invalid JSON, the endpoint stil
   "riskScore": 92,
   "confidence": 0.94,
   "summaryTh": "...",
-  "model": "qwen3.5-9b",
+  "model": "qwen3.5:9b",
   "llmUsed": true,
   "deterministicFallback": false,
   "assessments": [
