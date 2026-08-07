@@ -6,6 +6,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Options;
 using NTShield.Server.Correlation;
 using NTShield.Server.Data;
+using NTShield.Server.LLM;
 using NTShield.Server.Security;
 using NTShield.Server.Services;
 using NTShield.Server.Signatures;
@@ -44,6 +45,7 @@ builder.Services.Configure<ClickHouseOptions>(builder.Configuration.GetSection(C
 builder.Services.Configure<CorrelationOptions>(builder.Configuration.GetSection(CorrelationOptions.SectionName));
 builder.Services.Configure<SyslogOptions>(builder.Configuration.GetSection(SyslogOptions.SectionName));
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
+builder.Services.Configure<LlmGatewayOptions>(builder.Configuration.GetSection(LlmGatewayOptions.SectionName));
 // Bootstrap secrets into options before DI freezes them
 builder.Services.PostConfigure<SecurityOptions>(opts =>
 {
@@ -76,6 +78,18 @@ builder.Services.AddSingleton<CrossHostCorrelator>();
 builder.Services.AddSingleton<LateralMovementTracker>();
 builder.Services.AddSingleton<IngestService>();
 builder.Services.AddSingleton<ActionService>();
+builder.Services.AddHttpClient("llm-gateway")
+    .ConfigurePrimaryHttpMessageHandler(serviceProvider =>
+    {
+        var llmOptions = serviceProvider.GetRequiredService<IOptions<LlmGatewayOptions>>().Value;
+        return new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = llmOptions.SkipTlsVerify
+                ? HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+                : null
+        };
+    });
+builder.Services.AddSingleton<LlmGatewayService>();
 builder.Services.AddSingleton<TopologyService>();
 
 // Agent may send gzip-compressed ingest batches (body > ~4KB). Without this, ASP.NET returns 400 BadRequest.
@@ -234,6 +248,7 @@ using (var scope = app.Services.CreateScope())
     await store.InitializeAsync();
     var tracker = scope.ServiceProvider.GetRequiredService<LateralMovementTracker>();
     await tracker.LoadAsync();
+    await scope.ServiceProvider.GetRequiredService<LlmGatewayService>().InitializeAsync();
 }
 
 if (enableMtlsAuth)
@@ -286,6 +301,68 @@ app.MapGet("/api/v1/signatures", (OpenSourceSignatureEngine sigs) =>
         s.Source,
         s.Enabled
     })));
+
+app.MapGet("/api/v1/llm/status", async (LlmGatewayService gateway) =>
+    Results.Ok(await gateway.GetStatusAsync()));
+
+app.MapGet("/api/v1/llm/tokens", async (LlmGatewayService gateway) =>
+    Results.Ok(await gateway.ListTokensAsync()));
+
+app.MapPost("/api/v1/llm/tokens", async (
+    LlmTokenCreateRequest request,
+    LlmGatewayService gateway,
+    ICentralStore store,
+    HttpContext http) =>
+{
+    var issued = await gateway.CreateTokenAsync(request.Name, request.ExpiresInDays);
+    var actor = http.Items.TryGetValue(ApiKeyAuthMiddleware.PrincipalItem, out var principal)
+        ? principal?.ToString() ?? "operator"
+        : "operator";
+    await store.AppendAuditAsync(
+        actor,
+        "llm.token.create",
+        issued.Summary.TokenId,
+        "success",
+        JsonSerializer.Serialize(new { issued.Summary.Name, issued.Summary.ExpiresUtc }),
+        http.Connection.RemoteIpAddress?.ToString());
+    return Results.Created("/api/v1/llm/tokens", new
+    {
+        issued.Summary,
+        token = issued.Token,
+        warning = "Copy this token now. It will not be shown again."
+    });
+});
+
+app.MapDelete("/api/v1/llm/tokens/{tokenId}", async (
+    string tokenId,
+    LlmGatewayService gateway,
+    ICentralStore store,
+    HttpContext http) =>
+{
+    var revoked = await gateway.RevokeTokenAsync(tokenId);
+    if (!revoked)
+        return Results.NotFound(new { error = "llm_token_not_found_or_already_revoked" });
+
+    var actor = http.Items.TryGetValue(ApiKeyAuthMiddleware.PrincipalItem, out var principal)
+        ? principal?.ToString() ?? "operator"
+        : "operator";
+    await store.AppendAuditAsync(
+        actor,
+        "llm.token.revoke",
+        tokenId,
+        "success",
+        null,
+        http.Connection.RemoteIpAddress?.ToString());
+    return Results.Ok(new { revoked = true, tokenId });
+});
+
+app.MapPost("/api/v1/llm/test", async (LlmGatewayService gateway) =>
+    Results.Ok(await gateway.TestUpstreamAsync()));
+
+app.MapMethods("/api/v1/llm/v1/{**path}", new[] { HttpMethods.Get, HttpMethods.Post }, async (
+    string? path,
+    HttpContext http,
+    LlmGatewayService gateway) => await gateway.ProxyAsync(http, path));
 
 app.MapPost("/api/v1/agents/register", async (AgentRegistrationRequest req, ICentralStore store, IOptions<SecurityOptions> sec, HttpContext http) =>
 {
