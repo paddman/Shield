@@ -6,7 +6,7 @@ The AI service now keeps independent behavioral baselines by:
 tenant + asset_id + profile + schema_version
 ```
 
-This prevents authentication, process, network and resource metrics from being mixed into one model merely because they came from the same server. Humanity has already invented enough accidental data soups.
+This prevents authentication, process, network and resource metrics from being mixed into one model merely because they came from the same server.
 
 ## Detection pipeline
 
@@ -57,7 +57,7 @@ The detailed response reports:
 
 ## Recommended profiles
 
-Use stable profile names such as `auth`, `process`, `network`, `service`, `resource`, `database`, `waf` and `dns`. Increment `schemaVersion` whenever the numerical feature definition changes. A new schema learns independently instead of quietly corrupting the old baseline, which is a surprisingly useful property for software.
+Use stable profile names such as `auth`, `process`, `network`, `service`, `resource`, `database`, `waf` and `dns`. Increment `schemaVersion` whenever the numerical feature definition changes. A new schema learns independently and preserves the previous baseline.
 
 ## Operational boundary
 
