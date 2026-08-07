@@ -51,9 +51,16 @@ class Settings(BaseSettings):
     code_scan_max_llm_chars: int = Field(default=60_000, ge=5_000, le=500_000)
     code_scan_llm_max_tokens: int = Field(default=2800, ge=256, le=16_384)
 
-    anomaly_min_samples: int = 20
-    anomaly_max_samples: int = 500
-    anomaly_contamination: float = 0.05
+    anomaly_min_samples: int = Field(default=20, ge=8, le=10_000)
+    anomaly_max_samples: int = Field(default=500, ge=8, le=100_000)
+    anomaly_contamination: float = Field(default=0.05, gt=0.0, le=0.25)
+    anomaly_threshold: float = Field(default=0.75, ge=0.50, le=0.99)
+    anomaly_learn_threshold: float = Field(default=0.60, ge=0.05, le=0.95)
+    anomaly_warmup_guard_samples: int = Field(default=8, ge=3, le=1_000)
+    anomaly_n_estimators: int = Field(default=160, ge=32, le=512)
+    anomaly_cache_size: int = Field(default=256, ge=1, le=4_096)
+    anomaly_relative_scale_floor: float = Field(default=0.01, ge=0.0, le=0.50)
+    anomaly_absolute_scale_floor: float = Field(default=0.001, gt=0.0, le=1_000_000)
 
     central_connect_timeout_seconds: float = 8.0
     central_read_timeout_seconds: float = 30.0
