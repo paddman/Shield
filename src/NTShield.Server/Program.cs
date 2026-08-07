@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -13,6 +14,7 @@ using NTShield.Shared.Contracts;
 using NTShield.Shared.Models;
 using Microsoft.AspNetCore.Authentication.Certificate;
 using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Serilog;
 
@@ -38,6 +40,7 @@ builder.Host.UseSerilog();
 
 builder.Services.Configure<PostgresOptions>(builder.Configuration.GetSection(PostgresOptions.SectionName));
 builder.Services.Configure<SqliteCentralOptions>(builder.Configuration.GetSection(SqliteCentralOptions.SectionName));
+builder.Services.Configure<ClickHouseOptions>(builder.Configuration.GetSection(ClickHouseOptions.SectionName));
 builder.Services.Configure<CorrelationOptions>(builder.Configuration.GetSection(CorrelationOptions.SectionName));
 builder.Services.Configure<SyslogOptions>(builder.Configuration.GetSection(SyslogOptions.SectionName));
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
@@ -51,7 +54,13 @@ builder.Services.AddHostedService<SyslogListenerService>();
 
 // Default: SQLite (works out of the box). Set Database:Provider=Postgres for PostgreSQL.
 var dbProvider = builder.Configuration["Database:Provider"] ?? "Sqlite";
-if (string.Equals(dbProvider, "Postgres", StringComparison.OrdinalIgnoreCase) ||
+if (string.Equals(dbProvider, "ClickHouse", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddSingleton<SqliteCentralStore>();
+    builder.Services.AddSingleton<ICentralStore, ClickHouseStore>();
+    Log.Information("Central database provider: ClickHouse analytics + SQLite control plane");
+}
+else if (string.Equals(dbProvider, "Postgres", StringComparison.OrdinalIgnoreCase) ||
     string.Equals(dbProvider, "PostgreSQL", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddSingleton<ICentralStore, PostgresStore>();
@@ -97,7 +106,7 @@ builder.WebHost.ConfigureKestrel(options =>
         serverCert.Thumbprint,
         DescribeCertificateSans(serverCert));
 
-    options.ListenAnyIP(port, listen =>
+    void ConfigureHttps(ListenOptions listen)
     {
         listen.UseHttps(https =>
         {
@@ -107,7 +116,21 @@ builder.WebHost.ConfigureKestrel(options =>
                 https.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
             }
         });
-    });
+    }
+
+    var listenAddress = builder.Configuration.GetValue<string>("Kestrel:ListenAddress");
+    if (string.Equals(listenAddress, "localhost", StringComparison.OrdinalIgnoreCase))
+    {
+        options.ListenLocalhost(port, ConfigureHttps);
+    }
+    else if (IPAddress.TryParse(listenAddress, out var parsedAddress))
+    {
+        options.Listen(parsedAddress, port, ConfigureHttps);
+    }
+    else
+    {
+        options.ListenAnyIP(port, ConfigureHttps);
+    }
 });
 
 var enableMtlsAuth = builder.Configuration.GetValue("Security:EnableMtls", false);

@@ -1,0 +1,24 @@
+[Unit]
+Description=NT Shield Central API and Web Dashboard
+Documentation=https://github.com/paddman/Shield
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ntshield
+Group=ntshield
+WorkingDirectory=/opt/ntshield/central
+ExecStart=/opt/ntshield/central/NTShield.Server
+Restart=on-failure
+RestartSec=5
+Environment=DOTNET_ENVIRONMENT=Production
+Environment=ASPNETCORE_ENVIRONMENT=Production
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ntshield/central /var/log/ntshield/central
+
+[Install]
+WantedBy=multi-user.target

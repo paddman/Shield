@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reconfigure Central URL for installed Linux agent
-#   sudo ./set-central-url.sh --host 10.0.0.5 --port 7443
+#   sudo ./set-central-url.sh --url https://central.example.com
 set -euo pipefail
 
 INSTALL_ROOT="/opt/ntshield/agent"
@@ -10,6 +10,7 @@ CENTRAL_HOST=""
 CENTRAL_PORT="7443"
 CENTRAL_URL=""
 SCHEME="https"
+ALLOW_UNTRUSTED="false"
 
 ENROLLMENT_TOKEN=""
 API_KEY=""
@@ -21,6 +22,7 @@ while [[ $# -gt 0 ]]; do
     --enrollment-token) ENROLLMENT_TOKEN="${2:-}"; shift 2 ;;
     --api-key) API_KEY="${2:-}"; shift 2 ;;
     --http) SCHEME="http"; shift ;;
+    --allow-untrusted) ALLOW_UNTRUSTED="true"; shift ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
@@ -57,7 +59,7 @@ with open(p) as f:
     j = json.load(f)
 j.setdefault("Server", {})
 j["Server"]["Url"] = r"""$CENTRAL_URL"""
-j["Server"]["AllowUntrustedServerCertificate"] = True
+j["Server"]["AllowUntrustedServerCertificate"] = (r"""$ALLOW_UNTRUSTED""".lower() == "true")
 et = r"""$ENROLLMENT_TOKEN"""
 ak = r"""$API_KEY"""
 if et:

@@ -1,0 +1,212 @@
+using System.Text.Json;
+using ClickHouse.Driver;
+using Microsoft.Extensions.Options;
+using NTShield.Shared.Contracts;
+using NTShield.Shared.Models;
+
+namespace NTShield.Server.Data;
+
+/// <summary>
+/// ClickHouse analytics sink with SQLite retained for the transactional control plane.
+/// ClickHouse is append/merge oriented; API keys, policies and pending actions therefore
+/// remain in SQLite while telemetry, incidents, alerts and metrics are written to ClickHouse.
+/// </summary>
+public sealed class ClickHouseStore : ICentralStore
+{
+    private readonly SqliteCentralStore _control;
+    private readonly ClickHouseOptions _options;
+    private readonly ILogger<ClickHouseStore> _logger;
+    private readonly ClickHouseClient _client;
+    private readonly string _table;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public ClickHouseStore(
+        SqliteCentralStore control,
+        IOptions<ClickHouseOptions> options,
+        ILogger<ClickHouseStore> logger)
+    {
+        _control = control;
+        _options = options.Value;
+        _logger = logger;
+        _client = new ClickHouseClient(_options.ConnectionString);
+        var database = string.IsNullOrWhiteSpace(_options.Database) ? "ntshield" : _options.Database;
+        _table = $"{QuoteIdentifier(database)}.events";
+    }
+
+    public async Task InitializeAsync()
+    {
+        await _control.InitializeAsync();
+        try
+        {
+            var database = string.IsNullOrWhiteSpace(_options.Database) ? "ntshield" : _options.Database;
+            await _client.ExecuteNonQueryAsync($"CREATE DATABASE IF NOT EXISTS {QuoteIdentifier(database)}");
+            await _client.ExecuteNonQueryAsync($"""
+                CREATE TABLE IF NOT EXISTS {_table} (
+                    event_time DateTime64(3, 'UTC'),
+                    event_type LowCardinality(String),
+                    entity_id String,
+                    agent_id String,
+                    payload String
+                ) ENGINE = MergeTree
+                PARTITION BY toYYYYMM(event_time)
+                ORDER BY (event_type, agent_id, event_time, entity_id)
+                """);
+            _logger.LogInformation("ClickHouse analytics store ready at {Database}.{Table}", database, "events");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ClickHouse initialize failed");
+            if (_options.FailWrites) throw;
+        }
+    }
+
+    public async Task RegisterAgentAsync(AgentRegistrationRequest req)
+    {
+        await _control.RegisterAgentAsync(req);
+        await WriteAsync("agent_registration", req.AgentId, DateTimeOffset.UtcNow, req.AgentId, req);
+    }
+
+    public async Task UpsertAgentAsync(AgentHeartbeat hb)
+    {
+        await _control.UpsertAgentAsync(hb);
+        await WriteAsync("agent_heartbeat", hb.AgentId, hb.TimestampUtc, hb.AgentId, hb);
+    }
+
+    public Task<bool> HasIdempotencyKeyAsync(string key) => _control.HasIdempotencyKeyAsync(key);
+
+    public Task SaveIdempotencyKeyAsync(string key) => _control.SaveIdempotencyKeyAsync(key);
+
+    public async Task SaveBatchAsync(AgentIngestBatch batch)
+    {
+        await _control.SaveBatchAsync(batch);
+        var rows = new List<object[]>();
+        foreach (var item in batch.SecurityEvents)
+        {
+            rows.Add(Row("security_event", $"{batch.AgentId}:{item.EventRecordId}:{item.TimestampUtc.Ticks}",
+                item.TimestampUtc, batch.AgentId, item));
+        }
+
+        foreach (var item in batch.NetworkConnections)
+        {
+            rows.Add(Row("network_connection", $"{batch.AgentId}:{item.TimestampUtc.Ticks}:{item.RemoteAddress}:{item.RemotePort}",
+                item.TimestampUtc, batch.AgentId, item));
+        }
+
+        foreach (var item in batch.Alerts)
+        {
+            rows.Add(Row("detection_alert", item.AlertId, item.TimestampUtc, batch.AgentId, item));
+        }
+
+        await InsertRowsAsync(rows);
+    }
+
+    public async Task UpsertIncidentAsync(Incident incident)
+    {
+        await _control.UpsertIncidentAsync(incident);
+        await WriteAsync("incident", incident.IncidentId, incident.LastSeenUtc, incident.SourceAgentId ?? "", incident);
+    }
+
+    public Task<IReadOnlyList<Incident>> ListIncidentsAsync(int take) => _control.ListIncidentsAsync(take);
+
+    public Task<Incident?> GetIncidentAsync(string id) => _control.GetIncidentAsync(id);
+
+    public Task<IReadOnlyList<object>> ListAgentsAsync() => _control.ListAgentsAsync();
+
+    public Task<IReadOnlyList<NetworkConnectionRecord>> FindOutboundAsync(
+        string remoteIp, int? remotePort, DateTimeOffset from, DateTimeOffset to) =>
+        _control.FindOutboundAsync(remoteIp, remotePort, from, to);
+
+    public Task SavePendingActionAsync(ResponseActionRequest request, string agentKey) =>
+        _control.SavePendingActionAsync(request, agentKey);
+
+    public Task<List<ResponseActionRequest>> TakePendingActionsAsync(string agentId) =>
+        _control.TakePendingActionsAsync(agentId);
+
+    public Task<ResponseActionRequest?> GetPendingActionAsync(string requestId) =>
+        _control.GetPendingActionAsync(requestId);
+
+    public async Task UpsertCampaignJsonAsync(string campaignId, string json)
+    {
+        await _control.UpsertCampaignJsonAsync(campaignId, json);
+        await WriteAsync("threat_campaign", campaignId, DateTimeOffset.UtcNow, "", json);
+    }
+
+    public Task<IReadOnlyList<(string Id, string Json)>> ListCampaignJsonAsync(int take) =>
+        _control.ListCampaignJsonAsync(take);
+
+    public async Task AppendAuditAsync(string actor, string action, string? target, string result, string? detailJson, string? sourceIp)
+    {
+        await _control.AppendAuditAsync(actor, action, target, result, detailJson, sourceIp);
+        await WriteAsync("audit", target ?? action, DateTimeOffset.UtcNow, "", new
+        {
+            actor,
+            action,
+            target,
+            result,
+            detailJson,
+            sourceIp
+        });
+    }
+
+    public Task<IReadOnlyList<AuditLogEntry>> ListAuditAsync(int take) => _control.ListAuditAsync(take);
+
+    public Task<AgentPolicy> GetActivePolicyAsync(string? agentId = null) => _control.GetActivePolicyAsync(agentId);
+
+    public Task UpsertPolicyAsync(AgentPolicy policy) => _control.UpsertPolicyAsync(policy);
+
+    public Task<string?> IssueAgentApiKeyAsync(string agentId, bool rotate) =>
+        _control.IssueAgentApiKeyAsync(agentId, rotate);
+
+    public Task SetAgentApiKeyHashAsync(string agentId, string keyHash) =>
+        _control.SetAgentApiKeyHashAsync(agentId, keyHash);
+
+    public Task<string?> FindAgentIdByApiKeyHashAsync(string keyHash) =>
+        _control.FindAgentIdByApiKeyHashAsync(keyHash);
+
+    public Task UpdateAgentIntegrityAsync(string agentId, string? binarySha256, bool? isSigned, int? policyVersion) =>
+        _control.UpdateAgentIntegrityAsync(agentId, binarySha256, isSigned, policyVersion);
+
+    public async Task SaveAgentMetricsAsync(AgentHeartbeat hb)
+    {
+        await _control.SaveAgentMetricsAsync(hb);
+        await WriteAsync("agent_metric", hb.AgentId, hb.TimestampUtc, hb.AgentId, hb);
+    }
+
+    public Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60) =>
+        _control.GetAgentAsync(agentId, metricsTake);
+
+    public Task<IReadOnlyList<AgentMetricsSample>> ListAgentMetricsAsync(string agentId, int take = 60) =>
+        _control.ListAgentMetricsAsync(agentId, take);
+
+    private async Task WriteAsync(string type, string entityId, DateTimeOffset timestamp, string agentId, object payload)
+    {
+        await InsertRowsAsync([Row(type, entityId, timestamp, agentId, payload)]);
+    }
+
+    private async Task InsertRowsAsync(IReadOnlyList<object[]> rows)
+    {
+        if (rows.Count == 0) return;
+        try
+        {
+            await _client.InsertBinaryAsync(_table,
+                ["event_time", "event_type", "entity_id", "agent_id", "payload"], rows);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ClickHouse analytics insert failed for {Count} rows", rows.Count);
+            if (_options.FailWrites) throw;
+        }
+    }
+
+    private static object[] Row(string type, string entityId, DateTimeOffset timestamp, string agentId, object payload) =>
+    [
+        timestamp.UtcDateTime,
+        type,
+        entityId ?? string.Empty,
+        agentId ?? string.Empty,
+        JsonSerializer.Serialize(payload, JsonOptions)
+    ];
+
+    private static string QuoteIdentifier(string identifier) =>
+        "`" + identifier.Replace("`", "``", StringComparison.Ordinal) + "`";
+}

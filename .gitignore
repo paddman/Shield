@@ -33,6 +33,7 @@ App_Data/
 *.p12
 *.key
 appsettings.*.local.json
+deploy/central-linux/appsettings.Production.json
 .env
 
 ## OS
