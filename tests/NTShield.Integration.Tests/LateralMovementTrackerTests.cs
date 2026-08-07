@@ -93,6 +93,45 @@ public class LateralMovementTrackerTests
         Assert.Empty(tracker.FindByHostOrIp("203.0.113.1"));
     }
 
+    [Fact]
+    public async Task Detection_Alert_Becomes_Incident_With_ML_Features()
+    {
+        var correlator = new CrossHostCorrelator(
+            new NullCentralStore(),
+            Options.Create(new CorrelationOptions()),
+            NullLogger<CrossHostCorrelator>.Instance);
+        var incidents = await correlator.CorrelateAsync(new AgentIngestBatch
+        {
+            AgentId = "agent-1",
+            ComputerName = "HOST-1",
+            Alerts =
+            [
+                new DetectionAlert
+                {
+                    AlertId = "alert-1",
+                    AgentId = "agent-1",
+                    ComputerName = "HOST-1",
+                    RuleId = "HASH_BAD",
+                    RuleName = "NT Shield Antivirus",
+                    Title = "Antivirus threat detected",
+                    Severity = Severity.Critical,
+                    IncidentScore = 100,
+                    DetectionStage = "signature → heuristic",
+                    Features = new Dictionary<string, double> { ["hash_hit"] = 1, ["entropy"] = 7.9 },
+                    AssetId = "HOST-1",
+                    ObserveBaseline = false,
+                    EvidenceJson = "[{\"source\":\"endpoint\"}]"
+                }
+            ]
+        }, CancellationToken.None);
+
+        var incident = Assert.Single(incidents);
+        Assert.Equal(100, incident.IncidentScore);
+        Assert.Equal(2, incident.Features.Count);
+        Assert.Equal("HOST-1", incident.AssetId);
+        Assert.False(incident.ObserveBaseline);
+    }
+
     private sealed class NullCentralStore : ICentralStore
     {
         public Task InitializeAsync() => Task.CompletedTask;

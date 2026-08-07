@@ -63,6 +63,7 @@ builder.Services.Configure<NetworkCollectorOptions>(builder.Configuration.GetSec
 builder.Services.Configure<ProcessCollectorOptions>(builder.Configuration.GetSection("Collectors"));
 builder.Services.Configure<ScheduledTaskCollectorOptions>(builder.Configuration.GetSection("Collectors"));
 builder.Services.Configure<DetectionOptions>(builder.Configuration.GetSection(DetectionOptions.SectionName));
+builder.Services.Configure<AntivirusOptions>(builder.Configuration.GetSection(AntivirusOptions.SectionName));
 builder.Services.Configure<ResponseOptions>(builder.Configuration.GetSection(ResponseOptions.SectionName));
 
 builder.Services.PostConfigure<AgentOptions>(opts =>
@@ -100,6 +101,7 @@ builder.Services.AddSingleton<FirewallBlocker>();
 builder.Services.AddSingleton<IEvidenceCollector, EvidencePackager>();
 builder.Services.AddSingleton<RuntimePolicyState>();
 builder.Services.AddSingleton<RansomwareFileActivityMonitor>();
+builder.Services.AddSingleton<IFileProtectionService, EndpointProtectionService>();
 builder.Services.AddSingleton<IResponseExecutor, LocalResponseExecutor>();
 builder.Services.AddSingleton<ITransportClient, HttpsTransportClient>();
 builder.Services.AddSingleton<NTShield.Transport.SyslogForwarder>();

@@ -102,6 +102,10 @@ public static partial class EventDataSanitizer
         "VacuumJournal",
         "CollectDiagnostics",
         "ExportEvidence",
+        "ScanFile",
+        "ScanPath",
+        "QuarantineFile",
+        "RestoreQuarantinedFile",
         "QuarantineHost",
         "LogOnly"
     };

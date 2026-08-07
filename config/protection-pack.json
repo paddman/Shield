@@ -1,0 +1,8 @@
+{
+  "packId": "ntshield-default",
+  "version": 1,
+  "payloadJson": "{\"hashSignatures\":[],\"yaraRules\":\"rule NTShield_EICAR_Test { strings: $e = \\\"X5O!P%@AP[4\\\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*\\\" condition: $e }\\n\\nrule NTShield_Suspicious_PowerShell { strings: $a = \\\"FromBase64String\\\" nocase $b = \\\"DownloadString\\\" nocase $c = \\\"IEX(\\\" nocase condition: 2 of them }\"}",
+  "sha256": "",
+  "signature": "",
+  "publishedAtUtc": "2026-08-07T00:00:00Z"
+}

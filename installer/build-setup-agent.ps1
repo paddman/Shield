@@ -81,6 +81,11 @@ if (-not $SkipPublish) {
     New-Item -ItemType Directory -Force -Path (Join-Path $agentOut "config") | Out-Null
     Copy-Item (Join-Path $Root "config\rules.json") (Join-Path $agentOut "config\") -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $Root "config\allowlist.json") (Join-Path $agentOut "config\") -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $Root "config\protection-pack.json") (Join-Path $agentOut "config\") -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $Root "tools\yara64.exe")) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $agentOut "tools") | Out-Null
+        Copy-Item (Join-Path $Root "tools\yara64.exe") (Join-Path $agentOut "tools\") -Force
+    }
 
     Write-Host ""
     Write-Host "[2/3] Publishing Agent Tray (system tray icon, self-contained)..." -ForegroundColor Yellow

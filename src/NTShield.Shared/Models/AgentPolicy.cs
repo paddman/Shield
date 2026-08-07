@@ -20,6 +20,7 @@ public sealed class AgentPolicy
     public bool AutoBlockDestinationIp { get; set; } = true;
     public string AutoBlockMinSeverity { get; set; } = "High";
     public List<string>? LogPaths { get; set; }
+    public ProtectionPack? ProtectionPack { get; set; }
 
     /// <summary>Optional RSA signature over policy JSON (base64). Verified when public key configured.</summary>
     public string? Signature { get; set; }

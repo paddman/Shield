@@ -36,6 +36,7 @@ public sealed class AgentWorker : BackgroundService
     private readonly NTShield.Transport.SyslogForwarder _syslog;
     private readonly RuntimePolicyState _runtimePolicy;
     private readonly RansomwareFileActivityMonitor _fileActivityMonitor;
+    private readonly IFileProtectionService _protectionService;
 
     private readonly List<SecurityEventRecord> _eventBuffer = [];
     private readonly List<NetworkConnectionRecord> _connectionBuffer = [];
@@ -73,7 +74,8 @@ public sealed class AgentWorker : BackgroundService
         ITransportClient transport,
         NTShield.Transport.SyslogForwarder syslog,
         RuntimePolicyState runtimePolicy,
-        RansomwareFileActivityMonitor fileActivityMonitor)
+        RansomwareFileActivityMonitor fileActivityMonitor,
+        IFileProtectionService protectionService)
     {
         _logger = logger;
         _agentOptions = agentOptions.Value;
@@ -95,6 +97,7 @@ public sealed class AgentWorker : BackgroundService
         _syslog = syslog;
         _runtimePolicy = runtimePolicy;
         _fileActivityMonitor = fileActivityMonitor;
+        _protectionService = protectionService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -127,6 +130,7 @@ public sealed class AgentWorker : BackgroundService
         await _detectionEngine.InitializeAsync(stoppingToken);
         ConfigurePowerShellTelemetry();
         _fileActivityMonitor.Start();
+        _protectionService.Start();
 
         _eventLogCollector.EventReceived += OnEventReceived;
         await _eventLogCollector.StartAsync(stoppingToken);
@@ -174,6 +178,7 @@ public sealed class AgentWorker : BackgroundService
         finally
         {
             _fileActivityMonitor.Stop();
+            _protectionService.Stop();
             _eventLogCollector.EventReceived -= OnEventReceived;
             await _eventLogCollector.StopAsync(CancellationToken.None);
             await WriteStatusFileAsync(stopping: true);
@@ -264,6 +269,7 @@ public sealed class AgentWorker : BackgroundService
 
         var alerts = (await _detectionEngine.EvaluateAsync(merged, connections, CancellationToken.None))
             .Concat(_fileActivityMonitor.DrainAlerts())
+            .Concat(_protectionService.DrainAlerts())
             .ToList();
         foreach (var alert in alerts.Where(a => !a.Suppressed))
         {
@@ -468,6 +474,7 @@ public sealed class AgentWorker : BackgroundService
         }
 
         summaryParts.Add($"ws={proc.WorkingSet64 / (1024 * 1024)}MB");
+        summaryParts.Add($"protection={_protectionService.ProtectionStatus} pack={_protectionService.RulePackVersion}");
         var metricsSummary = string.Join(" ", summaryParts);
 
         var hb = new AgentHeartbeat
@@ -488,6 +495,11 @@ public sealed class AgentWorker : BackgroundService
             BinarySha256 = _binarySha256,
             IsBinarySigned = _isBinarySigned,
             AppliedPolicyVersion = _runtimePolicy.PolicyVersion > 0 ? _runtimePolicy.PolicyVersion : null,
+            ProtectionStatus = _protectionService.ProtectionStatus,
+            ProtectionRulePackVersion = _protectionService.RulePackVersion,
+            DefenderAvailable = _protectionService.DefenderAvailable,
+            YaraAvailable = _protectionService.YaraAvailable,
+            LastProtectionScanUtc = _protectionService.LastScanUtc,
             CpuPercentEstimate = host.CpuPercent,
             MemUsedPercent = host.MemUsedPercent,
             DiskUsedPercent = host.DiskUsedPercent,
@@ -517,6 +529,11 @@ public sealed class AgentWorker : BackgroundService
                 _logger.LogWarning(
                     "Central policy applied id={Id} v{Ver} mode={Mode} detectOnly={Det}",
                     policy.PolicyId, policy.PolicyVersion, policy.Mode, policy.DetectOnly);
+                if (policy.ProtectionPack is { } pack &&
+                    !_protectionService.TryApplyProtectionPack(pack, out var packError))
+                {
+                    _logger.LogWarning("Central protection pack rejected: {Error}", packError);
+                }
             }
         }
 
@@ -598,6 +615,11 @@ public sealed class AgentWorker : BackgroundService
             if (reg.Policy is not null && _runtimePolicy.TryApply(reg.Policy))
             {
                 _logger.LogInformation("Policy from register applied v{Ver}", reg.Policy.PolicyVersion);
+                if (reg.Policy.ProtectionPack is { } pack &&
+                    !_protectionService.TryApplyProtectionPack(pack, out var packError))
+                {
+                    _logger.LogWarning("Registration protection pack rejected: {Error}", packError);
+                }
             }
         }
         catch (Exception ex)

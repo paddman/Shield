@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Serilog;
+using NTShield.Core.Security;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -624,6 +625,30 @@ app.MapPut("/api/v1/policy", async (AgentPolicy policy, ICentralStore store, Htt
         JsonSerializer.Serialize(new { policy.PolicyVersion, policy.Mode, policy.DetectOnly }),
         http.Connection.RemoteIpAddress?.ToString());
     return Results.Ok(policy);
+});
+
+app.MapPut("/api/v1/protection-pack", async (ProtectionPack pack, ICentralStore store, IOptions<SecurityOptions> security, HttpContext http) =>
+{
+    if (string.IsNullOrWhiteSpace(pack.PackId) || pack.Version < 1 || string.IsNullOrWhiteSpace(pack.PayloadJson))
+        return Results.BadRequest(new { error = "invalid_protection_pack" });
+
+    var sha = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(pack.PayloadJson))).ToLowerInvariant();
+    if (!string.Equals(sha, pack.Sha256, StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = "protection_pack_sha256_invalid" });
+    if (string.IsNullOrWhiteSpace(pack.Signature))
+        return Results.BadRequest(new { error = "protection_pack_signature_required" });
+    if (string.IsNullOrWhiteSpace(security.Value.PolicySigningPublicKeyPem))
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    if (!UpdatePackageValidator.VerifySignedConfig(pack.PayloadJson, pack.Signature, security.Value.PolicySigningPublicKeyPem))
+        return Results.BadRequest(new { error = "protection_pack_signature_invalid" });
+
+    var current = await store.GetActivePolicyAsync();
+    current.PolicyVersion = Math.Max(current.PolicyVersion + 1, pack.Version);
+    current.ProtectionPack = pack;
+    await store.UpsertPolicyAsync(current);
+    await store.AppendAuditAsync("operator", "protection_pack.update", pack.PackId, "success",
+        JsonSerializer.Serialize(new { pack.Version, pack.Sha256 }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Ok(new { accepted = true, policyVersion = current.PolicyVersion, pack });
 });
 
 app.MapGet("/api/v1/actions/{id}", async (string id, ActionService actions) =>

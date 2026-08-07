@@ -181,6 +181,8 @@ class IncidentInput(ApiModel):
     severity: str | int = "Medium"
     description: str = Field(default="", max_length=4000)
     status: str = Field(default="Open", max_length=80)
+    incident_score: int | None = Field(default=None, ge=0, le=100)
+    detection_stage: str | None = Field(default=None, max_length=500)
 
     source_ip: str | None = None
     source_host: str | None = None

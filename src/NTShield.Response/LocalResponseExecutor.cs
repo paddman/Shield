@@ -28,6 +28,7 @@ public sealed class LocalResponseExecutor : IResponseExecutor
     private readonly RuntimePolicyState _runtimePolicy;
     private readonly FirewallBlocker _firewall;
     private readonly IEvidenceCollector? _evidence;
+    private readonly IFileProtectionService? _protection;
     private readonly ILogger<LocalResponseExecutor> _logger;
 
     public LocalResponseExecutor(
@@ -36,7 +37,8 @@ public sealed class LocalResponseExecutor : IResponseExecutor
         RuntimePolicyState runtimePolicy,
         FirewallBlocker firewall,
         ILogger<LocalResponseExecutor> logger,
-        IEvidenceCollector? evidence = null)
+        IEvidenceCollector? evidence = null,
+        IFileProtectionService? protection = null)
     {
         _options = options.Value;
         _agentOptions = agentOptions.Value;
@@ -44,6 +46,7 @@ public sealed class LocalResponseExecutor : IResponseExecutor
         _firewall = firewall;
         _logger = logger;
         _evidence = evidence;
+        _protection = protection;
     }
 
     public bool IsIpsMode
@@ -206,6 +209,70 @@ public sealed class LocalResponseExecutor : IResponseExecutor
                     record.Status = "Completed";
                     record.Result = "logged";
                     break;
+
+                case "ScanFile":
+                    {
+                        if (_protection is null) throw new InvalidOperationException("File protection service unavailable");
+                        var result = await _protection.ScanFileAsync(request.TargetPath ?? throw new ArgumentException("TargetPath required"), cancellationToken);
+                        record.TargetPath = result.Path;
+                        record.Result = JsonSerializer.Serialize(result);
+                        record.Status = "Completed";
+                        break;
+                    }
+
+                case "ScanPath":
+                    {
+                        if (_protection is null) throw new InvalidOperationException("File protection service unavailable");
+                        var results = await _protection.ScanPathAsync(request.TargetPath ?? throw new ArgumentException("TargetPath required"), cancellationToken);
+                        record.TargetPath = request.TargetPath;
+                        record.Result = JsonSerializer.Serialize(new
+                        {
+                            scanned = results.Count,
+                            detections = results.Count(x => x.Score >= 35),
+                            highestScore = results.Count == 0 ? 0 : results.Max(x => x.Score)
+                        });
+                        record.Status = "Completed";
+                        break;
+                    }
+
+                case "QuarantineFile":
+                    {
+                        if (_protection is null) throw new InvalidOperationException("File protection service unavailable");
+                        var target = request.TargetPath ?? throw new ArgumentException("TargetPath required");
+                        if (!string.IsNullOrWhiteSpace(request.FileSha256))
+                        {
+                            var current = await _protection.ScanFileAsync(target, cancellationToken);
+                            if (!string.Equals(current.Sha256, request.FileSha256, StringComparison.OrdinalIgnoreCase))
+                            {
+                                record.TargetPath = current.Path;
+                                record.Status = "Rejected";
+                                record.Error = "Target file hash changed or does not match the approved request.";
+                                record.Result = "quarantine_not_run_hash_mismatch";
+                                break;
+                            }
+                        }
+                        var result = await _protection.QuarantineFileAsync(target, request.Reason, cancellationToken);
+                        record.TargetPath = result.OriginalPath ?? target;
+                        record.QuarantineId = result.QuarantineId;
+                        record.Result = result.Success ? $"quarantined: {result.VaultPath}" : result.Error;
+                        record.Status = result.Success ? "Completed" : "Failed";
+                        record.Error = result.Error;
+                        break;
+                    }
+
+                case "RestoreQuarantinedFile":
+                    {
+                        if (_protection is null) throw new InvalidOperationException("File protection service unavailable");
+                        var result = await _protection.RestoreQuarantinedFileAsync(
+                            request.QuarantineId ?? throw new ArgumentException("QuarantineId required"),
+                            cancellationToken);
+                        record.TargetPath = result.OriginalPath;
+                        record.QuarantineId = result.QuarantineId;
+                        record.Result = result.Status;
+                        record.Status = result.Success ? "Completed" : "Failed";
+                        record.Error = result.Error;
+                        break;
+                    }
 
                 case "BlockDestinationIp":
                     {
@@ -454,7 +521,7 @@ public sealed class LocalResponseExecutor : IResponseExecutor
     }
 
     private static bool RequiresApproval(string actionType) =>
-        actionType is not ("LogOnly" or "ExportEvidence");
+        actionType is not ("LogOnly" or "ExportEvidence" or "ScanFile" or "ScanPath");
 
     private void ApplyFirewall(ResponseActionRecord record, FirewallChangeResult result)
     {
@@ -691,6 +758,8 @@ public sealed class LocalResponseExecutor : IResponseExecutor
             r.Requester,
             r.TimestampUtc,
             r.ActionType,
+            r.TargetPath,
+            r.QuarantineId,
             r.Reason,
             r.BeforeState,
             r.Result,

@@ -32,6 +32,7 @@ public sealed class CrossHostCorrelator
     public async Task<IReadOnlyList<Incident>> CorrelateAsync(AgentIngestBatch batch, CancellationToken cancellationToken)
     {
         var incidents = new List<Incident>();
+        incidents.AddRange(BuildAlertIncidents(batch));
         var authEvents = batch.SecurityEvents
             .Where(e => e.EventId is 4624 or 4625 or 4672)
             .Where(e => !string.IsNullOrWhiteSpace(e.SourceIp))
@@ -182,6 +183,43 @@ public sealed class CrossHostCorrelator
         }
 
         return Dedup(incidents);
+    }
+
+    private static IEnumerable<Incident> BuildAlertIncidents(AgentIngestBatch batch)
+    {
+        foreach (var alert in batch.Alerts)
+        {
+            var id = "alert-" + alert.AlertId;
+            yield return new Incident
+            {
+                IncidentId = id,
+                Title = alert.Title,
+                RuleId = alert.RuleId,
+                Severity = alert.Severity,
+                SourceHost = alert.ComputerName,
+                SourceAgentId = alert.AgentId,
+                ProcessPath = alert.FilePath,
+                ExecutableSha256 = alert.FileSha256,
+                FirstSeen = alert.TimestampUtc,
+                LastSeen = alert.TimestampUtc,
+                Description = alert.Description,
+                IncidentScore = alert.IncidentScore,
+                DetectionStage = alert.DetectionStage,
+                Features = new Dictionary<string, double>(alert.Features),
+                AssetId = alert.AssetId ?? alert.ComputerName,
+                ObserveBaseline = alert.ObserveBaseline,
+                EvidenceJson = alert.EvidenceJson,
+                CorrelationKey = id,
+                Status = "Open",
+                Context = new Dictionary<string, object?>
+                {
+                    ["filePath"] = alert.FilePath,
+                    ["fileSha256"] = alert.FileSha256,
+                    ["detectionStage"] = alert.DetectionStage,
+                    ["incidentScore"] = alert.IncidentScore
+                }
+            };
+        }
     }
 
     private static List<Incident> BuildLocalSprayIncidents(AgentIngestBatch batch)
