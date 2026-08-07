@@ -39,6 +39,8 @@
     <None Update="appsettings.Production.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\config\rules.json" Link="config\rules.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\config\allowlist.json" Link="config\allowlist.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\config\protection-pack.json" Link="config\protection-pack.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tools\yara64.exe" Link="tools\yara64.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\tools\yara64.exe')" />
   </ItemGroup>
   <!-- Avoid duplicate default-rules.json from Detection project during publish -->
   <Target Name="RemoveDuplicateRulesFromPublish" AfterTargets="ComputeFilesToPublish">

@@ -14,6 +14,7 @@
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\NTShield.Agent\NTShield.Agent.csproj" />
     <ProjectReference Include="..\..\src\NTShield.Storage\NTShield.Storage.csproj" />
     <ProjectReference Include="..\..\src\NTShield.Detection\NTShield.Detection.csproj" />
     <ProjectReference Include="..\..\src\NTShield.Response\NTShield.Response.csproj" />

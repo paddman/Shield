@@ -17,6 +17,7 @@
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\NTShield.Core\NTShield.Core.csproj" />
     <ProjectReference Include="..\NTShield.Shared\NTShield.Shared.csproj" />
   </ItemGroup>
   <ItemGroup>

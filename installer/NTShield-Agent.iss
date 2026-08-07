@@ -98,6 +98,8 @@ Source: "{#SourceRoot}\config\rules.json"; DestDir: "{app}"; Flags: ignoreversio
 Source: "{#SourceRoot}\config\allowlist.json"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SourceRoot}\config\rules.json"; DestDir: "{app}\config"; Flags: ignoreversion
 Source: "{#SourceRoot}\config\allowlist.json"; DestDir: "{app}\config"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceRoot}\config\protection-pack.json"; DestDir: "{app}\config"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceRoot}\tools\yara64.exe"; DestDir: "{app}\tools"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SourceRoot}\installer\setup-helpers\register-agent-service.ps1"; DestDir: "{app}\Installer"; Flags: ignoreversion
 Source: "{#SourceRoot}\installer\setup-helpers\unregister-agent-service.ps1"; DestDir: "{app}\Installer"; Flags: ignoreversion
 Source: "{#SourceRoot}\installer\setup-helpers\set-agent-central-url.ps1"; DestDir: "{app}\Installer"; Flags: ignoreversion

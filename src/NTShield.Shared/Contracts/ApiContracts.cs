@@ -76,6 +76,11 @@ public sealed class AgentHeartbeat
     public long? HostMemTotalBytes { get; set; }
     /// <summary>One-line metrics summary for Status-like display.</summary>
     public string? MetricsSummary { get; set; }
+    public string? ProtectionStatus { get; set; }
+    public int? ProtectionRulePackVersion { get; set; }
+    public bool? DefenderAvailable { get; set; }
+    public bool? YaraAvailable { get; set; }
+    public DateTimeOffset? LastProtectionScanUtc { get; set; }
 }
 
 /// <summary>Fleet inventory row returned by GET /api/v1/agents</summary>

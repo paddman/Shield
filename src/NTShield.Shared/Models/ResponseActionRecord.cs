@@ -19,6 +19,8 @@ public sealed class ResponseActionRecord
     public string? RollbackCommand { get; set; }
     public string? Details { get; set; }
     public string? Error { get; set; }
+    public string? TargetPath { get; set; }
+    public string? QuarantineId { get; set; }
     public bool RequiresApproval { get; set; }
     public bool Approved { get; set; }
     public string? ApprovalId { get; set; }
@@ -45,6 +47,9 @@ public sealed class ResponseActionRequest
     public string? ServiceName { get; set; }
     public string? TaskPath { get; set; }
     public string? TaskName { get; set; }
+    public string? TargetPath { get; set; }
+    public string? FileSha256 { get; set; }
+    public string? QuarantineId { get; set; }
     public string? IncidentId { get; set; }
     public string? AlertId { get; set; }
     public bool Approved { get; set; }

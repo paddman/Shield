@@ -112,6 +112,18 @@ class HybridRiskEngine:
                 )
             )
 
+        # Endpoint protection has already combined deterministic layers. Preserve
+        # that floor so AI correlation can enrich a verdict but never downgrade a
+        # confirmed local detection because the model saw sparse context.
+        if incident.incident_score is not None:
+            floor = max(0, min(100, incident.incident_score))
+            if floor > score:
+                add(
+                    "endpoint_protection_score",
+                    floor - score,
+                    f"Endpoint layered protection supplied a minimum score of {floor}",
+                )
+
         if incident.failed_attempts >= 5:
             delta = 5 if incident.failed_attempts < 20 else 12 if incident.failed_attempts < 100 else 18
             add("failed_authentication_burst", delta, f"{incident.failed_attempts} failed authentication attempts")

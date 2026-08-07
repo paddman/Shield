@@ -670,6 +670,7 @@ Details: [`docs/roadmap-trellix-class.md`](docs/roadmap-trellix-class.md)
 | [Threat coverage](docs/threat-coverage.md) | What we detect / track |
 | [IDS / IPS mode](docs/ids-ips-mode.md) | Mode switch |
 | [Syslog + signatures](docs/syslog-and-signatures.md) | UDP 5514 |
+| [Layered Antivirus](docs/antivirus.md) | Windows Agent EPP pipeline |
 | [Incident response](docs/incident-response.md) | IR workflow |
 | [Threat model](docs/threat-model.md) | Security assumptions |
 | [Known limitations](docs/known-limitations.md) | Honest limits |

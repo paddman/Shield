@@ -221,6 +221,34 @@ public sealed class DetectionOptions
     public bool EnablePowerShellTelemetry { get; set; } = true;
 }
 
+public sealed class AntivirusOptions
+{
+    public const string SectionName = "Antivirus";
+
+    public bool Enabled { get; set; } = true;
+    public bool RealTimeMonitoring { get; set; } = true;
+    public bool ScheduledScanEnabled { get; set; } = true;
+    public int ScheduledScanIntervalHours { get; set; } = 24;
+    public List<string> ScanPaths { get; set; } = [@"C:\Users", @"C:\ProgramData"];
+    public List<string> ExcludedPaths { get; set; } =
+    [
+        @"\AppData\Local\Temp\",
+        @"\NTShield\Agent\",
+        @"\Windows\WinSxS\"
+    ];
+    public string YaraExecutablePath { get; set; } = "tools\\yara64.exe";
+    public string LocalProtectionPackPath { get; set; } = "config\\protection-pack.json";
+    public string ProtectionDataDirectory { get; set; } = "protection";
+    public string QuarantineDirectoryName { get; set; } = "quarantine";
+    public string ProtectionPublicKeyPem { get; set; } = string.Empty;
+    public int MaxFileSizeMb { get; set; } = 256;
+    public int MaxRealtimeQueue { get; set; } = 1024;
+    public int ScanTimeoutSeconds { get; set; } = 60;
+    public int ScheduledScanMaxFiles { get; set; } = 5000;
+    public bool EnableDefender { get; set; } = true;
+    public bool EnableYara { get; set; } = true;
+}
+
 public sealed class ResponseOptions
 {
     public const string SectionName = "Response";

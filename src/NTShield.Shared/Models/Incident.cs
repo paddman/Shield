@@ -47,6 +47,12 @@ public sealed class Incident
     public DateTimeOffset? LastSeen { get; set; }
 
     public string Description { get; set; } = string.Empty;
+    public int? IncidentScore { get; set; }
+    public string? DetectionStage { get; set; }
+    public Dictionary<string, double> Features { get; set; } = [];
+    public string? AssetId { get; set; }
+    public bool ObserveBaseline { get; set; }
+    public Dictionary<string, object?> Context { get; set; } = [];
     public string CorrelationKey { get; set; } = string.Empty;
     public string EvidenceJson { get; set; } = "[]";
     public List<EvidenceEventSummary> EvidenceEvents { get; set; } = [];

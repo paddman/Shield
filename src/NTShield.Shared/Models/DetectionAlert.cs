@@ -21,6 +21,13 @@ public sealed class DetectionAlert
     public int DistinctUserCount { get; set; }
     public int DistinctDestinationCount { get; set; }
     public string EvidenceJson { get; set; } = "[]";
+    public int? IncidentScore { get; set; }
+    public string? DetectionStage { get; set; }
+    public string? FilePath { get; set; }
+    public string? FileSha256 { get; set; }
+    public string? AssetId { get; set; }
+    public Dictionary<string, double> Features { get; set; } = [];
+    public bool ObserveBaseline { get; set; }
     public bool Suppressed { get; set; }
     public DateTimeOffset? CooldownUntilUtc { get; set; }
 }
