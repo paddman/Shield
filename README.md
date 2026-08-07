@@ -671,6 +671,7 @@ Details: [`docs/roadmap-trellix-class.md`](docs/roadmap-trellix-class.md)
 | [IDS / IPS mode](docs/ids-ips-mode.md) | Mode switch |
 | [Syslog + signatures](docs/syslog-and-signatures.md) | UDP 5514 |
 | [Layered Antivirus](docs/antivirus.md) | Windows Agent EPP pipeline |
+| [AI Realtime Console](docs/ai-console.md) | Windows Agent Tray view for Brain/LLM health, analysis stream and evidence-grounded recommendations |
 | [Incident response](docs/incident-response.md) | IR workflow |
 | [Threat model](docs/threat-model.md) | Security assumptions |
 | [Known limitations](docs/known-limitations.md) | Honest limits |

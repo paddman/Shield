@@ -22,6 +22,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly System.Windows.Forms.Timer _timer;
     private Icon? _icon;
     private MiniDashboardForm? _dash;
+    private AiConsoleForm? _aiConsole;
 
     public TrayAppContext(string installDir)
     {
@@ -48,6 +49,7 @@ internal sealed class TrayAppContext : ApplicationContext
         _menu.Items.Add("Test Central connection…", null, async (_, _) => await TestCentralAsync());
         _menu.Items.Add("Open mini dashboard", null, (_, _) => ShowMiniDashboard());
         _menu.Items.Add("Close mini dashboard", null, (_, _) => HideMiniDashboard());
+        _menu.Items.Add("Open AI realtime console", null, (_, _) => ShowAiConsole());
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Service Control (Start/Stop)…", null, (_, _) => ShowServiceControl());
         _menu.Items.Add("Install / Register Agent service…", null, (_, _) => InstallAgentService());
@@ -170,6 +172,31 @@ internal sealed class TrayAppContext : ApplicationContext
         catch
         {
             // ignore
+        }
+    }
+
+    private void ShowAiConsole()
+    {
+        try
+        {
+            if (_aiConsole is null || _aiConsole.IsDisposed)
+            {
+                _aiConsole = new AiConsoleForm(_installDir);
+            }
+
+            if (!_aiConsole.Visible)
+            {
+                _aiConsole.Show();
+            }
+
+            _aiConsole.WindowState = FormWindowState.Normal;
+            _aiConsole.BringToFront();
+            _aiConsole.Activate();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Could not open AI console:\n" + ex.Message,
+                "NT Shield", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -482,6 +509,19 @@ internal sealed class TrayAppContext : ApplicationContext
             // ignore
         }
 
+        try
+        {
+            if (_aiConsole is { IsDisposed: false })
+            {
+                _aiConsole.Close();
+                _aiConsole.Dispose();
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
         _tray.Visible = false;
         _tray.Dispose();
         _icon?.Dispose();
@@ -499,6 +539,7 @@ internal sealed class TrayAppContext : ApplicationContext
             _icon?.Dispose();
             _menu.Dispose();
             try { _dash?.Dispose(); } catch { /* ignore */ }
+            try { _aiConsole?.Dispose(); } catch { /* ignore */ }
         }
 
         base.Dispose(disposing);
