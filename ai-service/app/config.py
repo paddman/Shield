@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     llm_enabled: bool = True
     llm_base_url: str = "http://127.0.0.1:8000/v1"
     llm_api_key: str = "local"
-    llm_model: str = "qwen3.5-9b"
+    llm_model: str = "qwen3.5:9b"
     llm_timeout_seconds: float = 45.0
     llm_temperature: float = 0.1
     llm_max_tokens: int = 2200
