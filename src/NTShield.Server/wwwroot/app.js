@@ -436,7 +436,7 @@ function renderAssetTable() {
   if (!rows.length) {
     const tr = element("tr");
     const td = element("td", "table-empty", "ยังไม่มี Agent ลงทะเบียน");
-    td.colSpan = 5;
+    td.colSpan = 6;
     tr.append(td);
     table.append(tr);
     return;
@@ -449,6 +449,7 @@ function renderAssetTable() {
     tr.append(
       statusTd,
       element("td", "", pick(item, "computerName") || pick(item, "agentId") || "Unknown"),
+      element("td", "", pick(item, "hostIp") || "—"),
       element("td", "", pick(item, "platform", "osVersion") || "unknown"),
       element("td", "", pick(item, "agentVersion") || "—"),
       element("td", "", relativeTime(dateValue(pick(item, "lastSeenUtc", "timestampUtc"))))
