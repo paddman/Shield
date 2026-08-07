@@ -19,6 +19,8 @@ const state = {
   incidents: [],
   threats: [],
   signatures: [],
+  llmStatus: {},
+  llmTokens: [],
   onlineAgents: 0,
   insights: [],
   tenantId: "default"
@@ -106,6 +108,14 @@ function bindDashboard() {
   $("#incidentSearch").addEventListener("input", renderIncidentTable);
   $("#severityFilter").addEventListener("change", renderIncidentTable);
   $("#assetSearch").addEventListener("input", renderAssetTable);
+  $("#llmTokenForm").addEventListener("submit", createLlmToken);
+  $("#llmTestButton").addEventListener("click", testLlmUpstream);
+  $("#llmTokenTable").addEventListener("click", revokeLlmToken);
+  $("#llmTokenClose").addEventListener("click", closeLlmTokenReveal);
+  $("#llmTokenCopy").addEventListener("click", copyLlmToken);
+  $("#llmTokenReveal").addEventListener("click", event => {
+    if (event.target.id === "llmTokenReveal") closeLlmTokenReveal();
+  });
   $("#saveSettings").addEventListener("click", async () => {
     state.apiKey = $("#settingsApiKey").value.trim();
     persistCredential($("#settingsRemember").checked);
@@ -180,12 +190,14 @@ function logout() {
 async function refreshData(notify) {
   setConnection(false, "กำลังเชื่อมต่อ…");
   try {
-    const [health, agents, incidents, threats, signatures] = await Promise.all([
+    const [health, agents, incidents, threats, signatures, llmStatus, llmTokens] = await Promise.all([
       requestJson("/api/v1/health"),
       requestJson("/api/v1/agents"),
       requestJson("/api/v1/incidents?take=250"),
       requestJson("/api/v1/threats?take=250"),
-      requestJson("/api/v1/signatures")
+      requestJson("/api/v1/signatures"),
+      requestJson("/api/v1/llm/status"),
+      requestJson("/api/v1/llm/tokens")
     ]);
 
     state.health = health || {};
@@ -193,6 +205,8 @@ async function refreshData(notify) {
     state.incidents = asArray(incidents);
     state.threats = asArray(threats);
     state.signatures = asArray(signatures);
+    state.llmStatus = llmStatus || {};
+    state.llmTokens = asArray(llmTokens);
     state.onlineAgents = state.agents.filter(isAgentOnline).length;
     state.insights = buildInsights();
     renderAll();
@@ -235,6 +249,7 @@ function renderAll() {
   renderThreatCards();
   renderFeed();
   renderInsights();
+  renderLlm();
 
   const incidentCount = state.incidents.length;
   const threatCount = state.threats.length;
@@ -247,6 +262,144 @@ function renderAll() {
   $("#feedSignatures").textContent = number(state.signatures.length);
   $("#feedAgents").textContent = number(state.agents.length);
   $("#feedOnline").textContent = number(state.onlineAgents);
+}
+
+function renderLlm() {
+  const status = state.llmStatus || {};
+  const reachable = pick(status, "upstreamReachable");
+  const enabled = Boolean(pick(status, "enabled"));
+  const badge = $("#llmGatewayBadge");
+  const dot = element("i", `live-dot ${reachable === true && enabled ? "" : "offline"}`);
+  badge.replaceChildren(dot, document.createTextNode(
+    !enabled ? " Gateway ปิดอยู่" : reachable === true ? " Upstream พร้อมใช้งาน" : reachable === false ? " Upstream ยังไม่พร้อม" : " ยังไม่ทดสอบ"
+  ));
+
+  const active = numeric(pick(status, "activeTokenCount"));
+  $("#llmActiveTokens").textContent = `${number(active)} active tokens`;
+  $("#llmProxyUrl").textContent = `${location.origin}${pick(status, "proxyBaseUrl") || "/api/v1/llm/v1"}`;
+  $("#llmUpstreamUrl").textContent = pick(status, "upstreamBaseUrl") || "ยังไม่ตั้งค่า";
+  $("#llmModel").textContent = pick(status, "model") || "ตาม request";
+  $("#llmUpstreamState").textContent = reachable === true ? "พร้อมใช้งาน" : reachable === false ? (pick(status, "upstreamError") || "เชื่อมต่อไม่ได้") : "ยังไม่ทดสอบ";
+  $("#llmTokenTableState").textContent = `${number(state.llmTokens.length)} tokens`;
+
+  const table = $("#llmTokenTable");
+  table.replaceChildren();
+  if (!state.llmTokens.length) {
+    const row = element("tr");
+    const cell = element("td", "table-empty", "ยังไม่มี LLM token");
+    cell.colSpan = 7;
+    row.append(cell);
+    table.append(row);
+    return;
+  }
+
+  state.llmTokens.forEach(token => {
+    const revoked = Boolean(pick(token, "revokedUtc"));
+    const expired = !revoked && dateValue(pick(token, "expiresUtc")) <= new Date();
+    const statusText = revoked ? "Revoked" : expired ? "Expired" : "Active";
+    const statusClass = revoked || expired ? "offline" : "online";
+    const row = element("tr");
+    const action = element("button", "table-action", revoked ? "—" : "Revoke");
+    if (!revoked) {
+      action.type = "button";
+      action.dataset.revokeToken = pick(token, "tokenId");
+    } else {
+      action.disabled = true;
+    }
+    const statusCell = element("td");
+    statusCell.append(element("span", `status-badge ${statusClass}`, statusText));
+    row.append(
+      element("td", "", pick(token, "name") || "LLM Agent"),
+      element("td", "token-prefix", pick(token, "tokenPrefix") || "—"),
+      statusCell,
+      element("td", "", formatDate(pick(token, "createdUtc"))),
+      element("td", "", formatDate(pick(token, "expiresUtc"))),
+      element("td", "", number(pick(token, "requestCount"))),
+      element("td", "", action)
+    );
+    table.append(row);
+  });
+}
+
+async function createLlmToken(event) {
+  event.preventDefault();
+  const button = $("#llmTokenForm button[type=submit]");
+  const name = $("#llmTokenName").value.trim();
+  const expiresInDays = Number($("#llmTokenExpiry").value);
+  if (!name || !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 3650) {
+    toast("กรุณากรอกชื่อและอายุ token ให้ถูกต้อง");
+    return;
+  }
+  button.disabled = true;
+  try {
+    const result = await requestJson("/api/v1/llm/tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, expiresInDays })
+    });
+    state.llmTokens = [result.summary, ...state.llmTokens];
+    renderLlm();
+    $("#llmTokenPlaintext").textContent = result.token;
+    $("#llmTokenReveal").hidden = false;
+    $("#llmTokenName").value = "";
+    toast("สร้าง LLM token แล้ว — คัดลอกก่อนปิดหน้าต่าง");
+  } catch (error) {
+    toast(friendlyError(error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function revokeLlmToken(event) {
+  const button = event.target.closest("[data-revoke-token]");
+  if (!button || !window.confirm("ยืนยันการ revoke token นี้? Agent ที่ใช้ token จะเชื่อมต่อไม่ได้ทันที")) return;
+  button.disabled = true;
+  try {
+    await requestJson(`/api/v1/llm/tokens/${encodeURIComponent(button.dataset.revokeToken)}`, { method: "DELETE" });
+    const token = state.llmTokens.find(item => pick(item, "tokenId") === button.dataset.revokeToken);
+    if (token) token.revokedUtc = new Date().toISOString();
+    renderLlm();
+    toast("Revoke token แล้ว");
+  } catch (error) {
+    button.disabled = false;
+    toast(friendlyError(error));
+  }
+}
+
+async function testLlmUpstream() {
+  const button = $("#llmTestButton");
+  button.disabled = true;
+  button.textContent = "กำลังทดสอบ…";
+  try {
+    state.llmStatus = await requestJson("/api/v1/llm/test", { method: "POST" });
+    renderLlm();
+    toast(pick(state.llmStatus, "upstreamReachable") ? "เชื่อมต่อ LLM upstream สำเร็จ" : "ยังเชื่อมต่อ LLM upstream ไม่ได้");
+  } catch (error) {
+    toast(friendlyError(error));
+  } finally {
+    button.disabled = false;
+    button.textContent = "ทดสอบ upstream";
+  }
+}
+
+async function copyLlmToken() {
+  const token = $("#llmTokenPlaintext").textContent;
+  try {
+    await navigator.clipboard.writeText(token);
+    toast("คัดลอก LLM token แล้ว");
+  } catch {
+    const range = document.createRange();
+    range.selectNodeContents($("#llmTokenPlaintext"));
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    toast("เลือก token แล้ว กด Ctrl+C เพื่อคัดลอก");
+  }
+}
+
+function closeLlmTokenReveal() {
+  $("#llmTokenReveal").hidden = true;
+  $("#llmTokenPlaintext").textContent = "";
 }
 
 function renderOverview() {
