@@ -7,6 +7,19 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        var aiOnly = args.Any(arg => string.Equals(arg, "--ai-only", StringComparison.OrdinalIgnoreCase));
+        ApplicationConfiguration.Initialize();
+        Application.SetHighDpiMode(HighDpiMode.SystemAware);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+
+        var installDir = ResolveInstallDir(args);
+        if (aiOnly)
+        {
+            Application.Run(new AiConsoleForm(installDir));
+            return;
+        }
+
         using var mutex = new Mutex(true, MutexName, out var createdNew);
         if (!createdNew)
         {
@@ -14,13 +27,8 @@ internal static class Program
             return;
         }
 
-        ApplicationConfiguration.Initialize();
-        Application.SetHighDpiMode(HighDpiMode.SystemAware);
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-
-        var installDir = ResolveInstallDir(args);
-        Application.Run(new TrayAppContext(installDir));
+        var openAiConsole = args.Any(arg => string.Equals(arg, "--open-ai", StringComparison.OrdinalIgnoreCase));
+        Application.Run(new TrayAppContext(installDir, openAiConsole));
     }
 
     private static string ResolveInstallDir(string[] args)

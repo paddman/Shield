@@ -24,7 +24,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private MiniDashboardForm? _dash;
     private AiConsoleForm? _aiConsole;
 
-    public TrayAppContext(string installDir)
+    public TrayAppContext(string installDir, bool openAiConsole = false)
     {
         _installDir = installDir;
         _icon = LoadIcon();
@@ -101,6 +101,17 @@ internal sealed class TrayAppContext : ApplicationContext
         kick.Start();
 
         RefreshStatus();
+        if (openAiConsole)
+        {
+            var open = new System.Windows.Forms.Timer { Interval = 650 };
+            open.Tick += (_, _) =>
+            {
+                open.Stop();
+                open.Dispose();
+                ShowAiConsole();
+            };
+            open.Start();
+        }
     }
 
     private void Tray_MouseClick(object? sender, MouseEventArgs e)

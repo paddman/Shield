@@ -235,10 +235,7 @@ internal sealed class AiConsoleForm : Form
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            SplitterDistance = 590,
-            BackColor = PageBg,
-            Panel1MinSize = 380,
-            Panel2MinSize = 320
+            BackColor = PageBg
         };
         var listCard = new Panel { Dock = DockStyle.Fill, BackColor = CardBg, Padding = new Padding(10) };
         listCard.Controls.Add(_analysisGrid);
