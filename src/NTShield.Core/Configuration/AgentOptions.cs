@@ -153,6 +153,39 @@ public sealed class NetworkCollectorOptions
     public bool ResolveServices { get; set; } = true;
 }
 
+public sealed class IpLogFileInspectorOptions
+{
+    public const string SectionName = "Collectors";
+
+    /// <summary>Read explicitly configured text logs and extract IP evidence.</summary>
+    public bool IpLogFiles { get; set; } = true;
+
+    public bool Enabled
+    {
+        get => IpLogFiles;
+        set => IpLogFiles = value;
+    }
+
+    public int PollIntervalSeconds { get; set; } = 30;
+    public int MaxFiles { get; set; } = 32;
+    public int MaxBytesPerFile { get; set; } = 2 * 1024 * 1024;
+    public int MaxEventsPerCycle { get; set; } = 200;
+    public int AlertWindowMinutes { get; set; } = 5;
+    public int AuthFailureBurstMin { get; set; } = 10;
+    public int WebProbeBurstMin { get; set; } = 5;
+
+    /// <summary>
+    /// Keep the initial scope explicit. Missing paths are ignored; no drive-wide scan occurs.
+    /// </summary>
+    public List<string> Paths { get; set; } =
+    [
+        @"C:\ProgramData\NTShield\Agent\logs\*.log",
+        @"C:\Windows\System32\LogFiles\Firewall\pfirewall.log",
+        @"C:\inetpub\logs\LogFiles\W3SVC*\*.log",
+        @"C:\ProgramData\ssh\logs\*.log"
+    ];
+}
+
 public sealed class ProcessCollectorOptions
 {
     public const string SectionName = "Collectors";

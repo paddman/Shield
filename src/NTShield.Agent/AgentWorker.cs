@@ -19,6 +19,8 @@ public sealed class AgentWorker : BackgroundService
     private readonly ILogger<AgentWorker> _logger;
     private readonly AgentOptions _agentOptions;
     private readonly NetworkCollectorOptions _networkOptions;
+    private readonly IpLogFileInspectorOptions _ipLogOptions;
+    private readonly CodeScanOptions _codeScanOptions;
     private readonly ProcessCollectorOptions _processOptions;
     private readonly ScheduledTaskCollectorOptions _taskOptions;
     private readonly DetectionOptions _detectionOptions;
@@ -28,6 +30,8 @@ public sealed class AgentWorker : BackgroundService
     private readonly ILocalStore _store;
     private readonly IEventLogCollector _eventLogCollector;
     private readonly INetworkCollector _networkCollector;
+    private readonly IpLogFileInspector _ipLogInspector;
+    private readonly CodeScanService _codeScanService;
     private readonly IProcessCollector _processCollector;
     private readonly IScheduledTaskCollector _taskCollector;
     private readonly IDetectionEngine _detectionEngine;
@@ -40,6 +44,7 @@ public sealed class AgentWorker : BackgroundService
 
     private readonly List<SecurityEventRecord> _eventBuffer = [];
     private readonly List<NetworkConnectionRecord> _connectionBuffer = [];
+    private readonly List<DetectionAlert> _ipLogAlertBuffer = [];
     private readonly object _bufferSync = new();
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
     private long _eventsCollected;
@@ -58,6 +63,8 @@ public sealed class AgentWorker : BackgroundService
         ILogger<AgentWorker> logger,
         IOptions<AgentOptions> agentOptions,
         IOptions<NetworkCollectorOptions> networkOptions,
+        IOptions<IpLogFileInspectorOptions> ipLogOptions,
+        IOptions<CodeScanOptions> codeScanOptions,
         IOptions<ProcessCollectorOptions> processOptions,
         IOptions<ScheduledTaskCollectorOptions> taskOptions,
         IOptions<DetectionOptions> detectionOptions,
@@ -67,6 +74,8 @@ public sealed class AgentWorker : BackgroundService
         ILocalStore store,
         IEventLogCollector eventLogCollector,
         INetworkCollector networkCollector,
+        IpLogFileInspector ipLogInspector,
+        CodeScanService codeScanService,
         IProcessCollector processCollector,
         IScheduledTaskCollector taskCollector,
         IDetectionEngine detectionEngine,
@@ -80,6 +89,8 @@ public sealed class AgentWorker : BackgroundService
         _logger = logger;
         _agentOptions = agentOptions.Value;
         _networkOptions = networkOptions.Value;
+        _ipLogOptions = ipLogOptions.Value;
+        _codeScanOptions = codeScanOptions.Value;
         _processOptions = processOptions.Value;
         _taskOptions = taskOptions.Value;
         _detectionOptions = detectionOptions.Value;
@@ -89,6 +100,8 @@ public sealed class AgentWorker : BackgroundService
         _store = store;
         _eventLogCollector = eventLogCollector;
         _networkCollector = networkCollector;
+        _ipLogInspector = ipLogInspector;
+        _codeScanService = codeScanService;
         _processCollector = processCollector;
         _taskCollector = taskCollector;
         _detectionEngine = detectionEngine;
@@ -145,6 +158,8 @@ public sealed class AgentWorker : BackgroundService
         var flushTask = RunLoopAsync("flush", TimeSpan.FromSeconds(Math.Max(5, _centralOptions.FlushIntervalSeconds)), FlushOutboundAsync, stoppingToken);
         var heartbeatTask = RunLoopAsync("heartbeat", TimeSpan.FromSeconds(Math.Max(15, _centralOptions.HeartbeatIntervalSeconds)), HeartbeatAsync, stoppingToken);
         var networkTask = RunLoopAsync("network", TimeSpan.FromSeconds(Math.Max(2, _networkOptions.PollIntervalSeconds)), CollectNetworkAsync, stoppingToken);
+        var ipLogTask = RunLoopAsync("ip-log", TimeSpan.FromSeconds(Math.Max(10, _ipLogOptions.PollIntervalSeconds)), CollectIpLogsAsync, stoppingToken);
+        var codeScanTask = RunLoopAsync("code-scan", TimeSpan.FromHours(Math.Clamp(_codeScanOptions.IntervalHours, 1, 168)), ScanCodeAsync, stoppingToken);
         var processTask = RunLoopAsync("process", TimeSpan.FromSeconds(Math.Max(10, _processOptions.PollIntervalSeconds)), CollectProcessAsync, stoppingToken);
         var taskTask = RunLoopAsync("tasks", TimeSpan.FromSeconds(Math.Max(30, _taskOptions.PollIntervalSeconds)), CollectTasksAsync, stoppingToken);
         var detectTask = RunLoopAsync("detect", TimeSpan.FromSeconds(Math.Max(5, _detectionOptions.EvaluationIntervalSeconds)), EvaluateDetectionsAsync, stoppingToken);
@@ -173,7 +188,7 @@ public sealed class AgentWorker : BackgroundService
 
         try
         {
-            await Task.WhenAll(networkTask, processTask, taskTask, detectTask, flushTask, heartbeatTask, maintTask, statusTask);
+            await Task.WhenAll(networkTask, ipLogTask, codeScanTask, processTask, taskTask, detectTask, flushTask, heartbeatTask, maintTask, statusTask);
         }
         finally
         {
@@ -210,6 +225,53 @@ public sealed class AgentWorker : BackgroundService
             if (_connectionBuffer.Count > 5000)
             {
                 _connectionBuffer.RemoveRange(0, _connectionBuffer.Count - 2500);
+            }
+        }
+    }
+
+    private async Task CollectIpLogsAsync()
+    {
+        if (!_ipLogOptions.Enabled)
+        {
+            return;
+        }
+
+        var result = await _ipLogInspector.ScanAsync(CancellationToken.None);
+        foreach (var securityEvent in result.Events)
+        {
+            OnEventReceived(this, securityEvent);
+        }
+
+        if (result.Alerts.Count > 0)
+        {
+            lock (_bufferSync)
+            {
+                _ipLogAlertBuffer.AddRange(result.Alerts);
+            }
+            _lastActivityUtc = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private async Task ScanCodeAsync()
+    {
+        if (!_codeScanOptions.Enabled)
+        {
+            return;
+        }
+
+        var results = await _codeScanService.RunAsync(CancellationToken.None);
+        if (results.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var result in results)
+        {
+            if (!string.IsNullOrWhiteSpace(result.Error))
+            {
+                _logger.LogWarning(
+                    "Code scan report failed project={Project} findings={Findings}: {Error}",
+                    result.Project, result.Findings, result.Error);
             }
         }
     }
@@ -267,7 +329,15 @@ public sealed class AgentWorker : BackgroundService
             .Take(5000)
             .ToList();
 
+        List<DetectionAlert> ipLogAlerts;
+        lock (_bufferSync)
+        {
+            ipLogAlerts = _ipLogAlertBuffer.ToList();
+            _ipLogAlertBuffer.Clear();
+        }
+
         var alerts = (await _detectionEngine.EvaluateAsync(merged, connections, CancellationToken.None))
+            .Concat(ipLogAlerts)
             .Concat(_fileActivityMonitor.DrainAlerts())
             .Concat(_protectionService.DrainAlerts())
             .ToList();
@@ -771,6 +841,8 @@ public sealed class AgentWorker : BackgroundService
                 {
                     ["SecurityEvents"] = true,
                     ["NetworkConnections"] = _networkOptions.Enabled,
+                    ["IpLogFiles"] = _ipLogOptions.Enabled,
+                    ["CodeScan"] = _codeScanOptions.Enabled,
                     ["Processes"] = _processOptions.Enabled,
                     ["Services"] = _processOptions.Services,
                     ["ScheduledTasks"] = _taskOptions.Enabled,

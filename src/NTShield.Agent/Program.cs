@@ -58,8 +58,10 @@ builder.Services.PostConfigure<CentralServerOptions>(o =>
     }
 });
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection(StorageOptions.SectionName));
+builder.Services.Configure<CodeScanOptions>(builder.Configuration.GetSection(CodeScanOptions.SectionName));
 builder.Services.Configure<EventLogCollectorOptions>(builder.Configuration.GetSection("Collectors"));
 builder.Services.Configure<NetworkCollectorOptions>(builder.Configuration.GetSection("Collectors"));
+builder.Services.Configure<IpLogFileInspectorOptions>(builder.Configuration.GetSection("Collectors"));
 builder.Services.Configure<ProcessCollectorOptions>(builder.Configuration.GetSection("Collectors"));
 builder.Services.Configure<ScheduledTaskCollectorOptions>(builder.Configuration.GetSection("Collectors"));
 builder.Services.Configure<DetectionOptions>(builder.Configuration.GetSection(DetectionOptions.SectionName));
@@ -90,10 +92,12 @@ builder.Services.PostConfigure<NetworkCollectorOptions>(o =>
 });
 
 builder.Services.AddSingleton<ILocalStore, SqliteLocalStore>();
+builder.Services.AddHttpClient<CodeScanService>();
 builder.Services.AddSingleton<ProcessEnricher>();
 builder.Services.AddSingleton<IServiceResolver, WindowsServiceResolver>();
 builder.Services.AddSingleton<IEventLogCollector, WindowsEventLogCollector>();
 builder.Services.AddSingleton<INetworkCollector, IpHelperNetworkCollector>();
+builder.Services.AddSingleton<IpLogFileInspector>();
 builder.Services.AddSingleton<IProcessCollector, WmiProcessCollector>();
 builder.Services.AddSingleton<IScheduledTaskCollector, TaskSchedulerCollector>();
 builder.Services.AddSingleton<IDetectionEngine, RuleEngine>();
