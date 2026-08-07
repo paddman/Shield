@@ -86,6 +86,7 @@
         <button data-nav="assets">Assets</button>
         <button data-nav="topology">Topology</button>
         <button data-nav="analyst">AI Analyst</button>
+        <button data-nav="llm">LLM Gateway</button>
       </nav>
       <div class="operator">
         <span id="connectionDot" class="live-dot"></span>
@@ -103,6 +104,7 @@
         <button data-nav="assets"><span>▣</span> Assets</button>
         <button data-nav="topology"><span>⌘</span> Topology</button>
         <button data-nav="analyst"><span>AI</span> AI Analyst</button>
+        <button data-nav="llm"><span>↔</span> LLM Gateway</button>
         <button data-nav="settings"><span>⚙</span> Settings</button>
       </nav>
       <section class="sidebar-guardian" aria-label="system status">
@@ -284,6 +286,42 @@
         <div class="analyst-layout"><article class="card ai-summary"><div class="ai-orb">AI</div><h2>สิ่งที่ควรทำตอนนี้</h2><ul id="analystPageInsights"><li>กำลังประเมินข้อมูล…</li></ul></article><article class="card guardrail-card"><h2>ขอบเขตความปลอดภัย</h2><p>AI Analyst วิเคราะห์และเสนอแนวทาง แต่ไม่สั่ง block IP, isolate host, stop service หรือ kill process โดยไม่มีขั้นตอนอนุมัติของ Operator</p><div class="guardrail-flow"><span>Telemetry</span><b>→</b><span>AI Analysis</span><b>→</b><span>Operator Approval</span><b>→</b><span>Agent Action</span></div></article></div>
       </section>
 
+      <section class="page" data-page="llm" aria-labelledby="llmTitle">
+        <div class="page-heading">
+          <div><p class="eyebrow">SECURE MODEL ACCESS</p><h1 id="llmTitle">LLM Gateway</h1><p>Agent ใช้ token กับ Central แล้ว Central จึงส่งต่อไปยังเครื่อง LLM จริง</p></div>
+          <span id="llmGatewayBadge" class="count-pill"><i class="live-dot offline"></i> กำลังตรวจสอบ</span>
+        </div>
+
+        <div class="llm-overview-grid">
+          <article class="card llm-route-card">
+            <div class="card-title"><h2>Proxy route</h2><span id="llmActiveTokens">0 active tokens</span></div>
+            <div class="route-diagram">
+              <div class="route-node"><span>01</span><strong>Agent</strong><small>Bearer token</small></div>
+              <b>→</b>
+              <div class="route-node central"><span>02</span><strong>NT Shield Central</strong><small id="llmProxyUrl">/api/v1/llm/v1</small></div>
+              <b>→</b>
+              <div class="route-node upstream"><span>03</span><strong>LLM server</strong><small id="llmUpstreamUrl">ยังไม่ตั้งค่า</small></div>
+            </div>
+            <div class="llm-facts"><span>Model <b id="llmModel">—</b></span><span>Upstream <b id="llmUpstreamState">ยังไม่ทดสอบ</b></span></div>
+            <button id="llmTestButton" class="button-secondary" type="button">ทดสอบ upstream</button>
+            <p class="form-note">Upstream API key จะอยู่เฉพาะบน Central ไม่ถูกส่งให้ Agent และไม่แสดงในหน้านี้</p>
+          </article>
+
+          <form id="llmTokenForm" class="card llm-create-card">
+            <div class="card-title"><h2>ออก token ใหม่</h2><span>แสดงครั้งเดียว</span></div>
+            <label>ชื่อ token<input id="llmTokenName" maxlength="120" placeholder="เช่น Linux SOC Agent" required></label>
+            <label>อายุการใช้งาน (วัน)<input id="llmTokenExpiry" type="number" min="1" max="3650" value="90" required></label>
+            <button class="button-primary" type="submit">สร้าง LLM token</button>
+            <p class="form-note">เก็บ token ให้ปลอดภัย ระบบจะเก็บเฉพาะ hash และจะไม่สามารถดู plaintext ซ้ำได้</p>
+          </form>
+        </div>
+
+        <article class="card table-card llm-token-card">
+          <div class="table-toolbar"><div><strong>Tokens ที่ออกให้ Agent</strong><small>ใช้ Authorization: Bearer &lt;token&gt;</small></div><span id="llmTokenTableState">กำลังโหลด…</span></div>
+          <div class="table-scroll"><table><thead><tr><th>ชื่อ</th><th>Token</th><th>สถานะ</th><th>สร้างเมื่อ</th><th>หมดอายุ</th><th>ใช้แล้ว</th><th></th></tr></thead><tbody id="llmTokenTable"></tbody></table></div>
+        </article>
+      </section>
+
       <section class="page" data-page="settings" aria-labelledby="settingsTitle">
         <div class="page-heading"><div><p class="eyebrow">CONFIGURE</p><h1 id="settingsTitle">Settings</h1><p>การเชื่อมต่อของ Control Center</p></div></div>
         <article class="card settings-card"><h2>Central connection</h2><label>Central URL<input id="settingsOrigin" disabled></label><label>Operator API Key<input id="settingsApiKey" type="password" placeholder="ใส่ Key ใหม่"></label><label class="checkbox-row"><input id="settingsRemember" type="checkbox"> จดจำ Key ในเบราว์เซอร์นี้</label><div><button id="saveSettings" class="button-primary">บันทึกและเชื่อมต่อใหม่</button></div><p>Key ถูกส่งไปยัง Central ผ่าน HTTPS header และเก็บเฉพาะใน session storage เว้นแต่เลือก “จดจำ”</p></article>
@@ -295,6 +333,17 @@
       <div id="threatFeed" class="feed-list empty-state">ยังไม่มีข้อมูล</div>
       <div class="feed-intel"><h3>Threat Intelligence</h3><span><b id="feedSignatures">0</b> signatures loaded</span><span><b id="feedAgents">0</b> protected assets</span><span><b id="feedOnline">0</b> agents online</span></div>
     </aside>
+  </div>
+
+  <div id="llmTokenReveal" class="token-reveal" hidden>
+    <div class="token-reveal-card" role="dialog" aria-modal="true" aria-labelledby="llmTokenRevealTitle">
+      <button id="llmTokenClose" class="token-close" type="button" aria-label="ปิด">×</button>
+      <p class="eyebrow">TOKEN CREATED</p>
+      <h2 id="llmTokenRevealTitle">คัดลอก token นี้ตอนนี้</h2>
+      <p>ระบบจะไม่แสดง plaintext นี้อีกหลังจากปิดหน้าต่าง</p>
+      <code id="llmTokenPlaintext"></code>
+      <button id="llmTokenCopy" class="button-primary" type="button">คัดลอก token</button>
+    </div>
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
