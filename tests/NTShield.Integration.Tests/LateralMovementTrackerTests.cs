@@ -125,5 +125,20 @@ public class LateralMovementTrackerTests
         public Task<IReadOnlyList<AgentMetricsSample>> ListAgentMetricsAsync(string agentId, int take = 60) =>
             Task.FromResult<IReadOnlyList<AgentMetricsSample>>(Array.Empty<AgentMetricsSample>());
         public Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60) => Task.FromResult<AgentInventoryItem?>(null);
+        public Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId) =>
+            Task.FromResult<IReadOnlyList<TenantAsset>>(Array.Empty<TenantAsset>());
+        public Task<TenantAsset?> GetAssetAsync(string tenantId, string assetId) => Task.FromResult<TenantAsset?>(null);
+        public Task UpsertAssetAsync(string tenantId, TenantAsset asset) => Task.CompletedTask;
+        public Task<bool> DeleteAssetAsync(string tenantId, string assetId) => Task.FromResult(false);
+        public Task<IReadOnlyList<TopologyDocument>> ListTopologiesAsync(string tenantId) =>
+            Task.FromResult<IReadOnlyList<TopologyDocument>>(Array.Empty<TopologyDocument>());
+        public Task<TopologyDocument?> GetTopologyAsync(string tenantId, string topologyId) => Task.FromResult<TopologyDocument?>(null);
+        public Task UpsertTopologyAsync(string tenantId, TopologyDocument topology) => Task.CompletedTask;
+        public Task<bool> DeleteTopologyAsync(string tenantId, string topologyId) => Task.FromResult(false);
+        public Task<IReadOnlyList<DetectionWorkflow>> ListWorkflowsAsync(string tenantId) =>
+            Task.FromResult<IReadOnlyList<DetectionWorkflow>>(Array.Empty<DetectionWorkflow>());
+        public Task<DetectionWorkflow?> GetWorkflowAsync(string tenantId, string workflowId) => Task.FromResult<DetectionWorkflow?>(null);
+        public Task UpsertWorkflowAsync(string tenantId, DetectionWorkflow workflow) => Task.CompletedTask;
+        public Task<bool> DeleteWorkflowAsync(string tenantId, string workflowId) => Task.FromResult(false);
     }
 }

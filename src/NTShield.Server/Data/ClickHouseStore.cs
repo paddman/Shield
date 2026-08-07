@@ -178,6 +178,43 @@ public sealed class ClickHouseStore : ICentralStore
     public Task<IReadOnlyList<AgentMetricsSample>> ListAgentMetricsAsync(string agentId, int take = 60) =>
         _control.ListAgentMetricsAsync(agentId, take);
 
+    // Topology, asset and workflow graphs are transactional control-plane data;
+    // keep them in the SQLite control store when ClickHouse is enabled.
+    public Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId) => _control.ListAssetsAsync(tenantId);
+
+    public Task<TenantAsset?> GetAssetAsync(string tenantId, string assetId) =>
+        _control.GetAssetAsync(tenantId, assetId);
+
+    public Task UpsertAssetAsync(string tenantId, TenantAsset asset) =>
+        _control.UpsertAssetAsync(tenantId, asset);
+
+    public Task<bool> DeleteAssetAsync(string tenantId, string assetId) =>
+        _control.DeleteAssetAsync(tenantId, assetId);
+
+    public Task<IReadOnlyList<TopologyDocument>> ListTopologiesAsync(string tenantId) =>
+        _control.ListTopologiesAsync(tenantId);
+
+    public Task<TopologyDocument?> GetTopologyAsync(string tenantId, string topologyId) =>
+        _control.GetTopologyAsync(tenantId, topologyId);
+
+    public Task UpsertTopologyAsync(string tenantId, TopologyDocument topology) =>
+        _control.UpsertTopologyAsync(tenantId, topology);
+
+    public Task<bool> DeleteTopologyAsync(string tenantId, string topologyId) =>
+        _control.DeleteTopologyAsync(tenantId, topologyId);
+
+    public Task<IReadOnlyList<DetectionWorkflow>> ListWorkflowsAsync(string tenantId) =>
+        _control.ListWorkflowsAsync(tenantId);
+
+    public Task<DetectionWorkflow?> GetWorkflowAsync(string tenantId, string workflowId) =>
+        _control.GetWorkflowAsync(tenantId, workflowId);
+
+    public Task UpsertWorkflowAsync(string tenantId, DetectionWorkflow workflow) =>
+        _control.UpsertWorkflowAsync(tenantId, workflow);
+
+    public Task<bool> DeleteWorkflowAsync(string tenantId, string workflowId) =>
+        _control.DeleteWorkflowAsync(tenantId, workflowId);
+
     private async Task WriteAsync(string type, string entityId, DateTimeOffset timestamp, string agentId, object payload)
     {
         await InsertRowsAsync([Row(type, entityId, timestamp, agentId, payload)]);

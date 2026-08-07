@@ -45,4 +45,20 @@ public interface ICentralStore
     Task SaveAgentMetricsAsync(AgentHeartbeat hb);
     Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60);
     Task<IReadOnlyList<AgentMetricsSample>> ListAgentMetricsAsync(string agentId, int take = 60);
+
+    // Tenant-scoped asset inventory, topology maps and declarative workflows.
+    Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId);
+    Task<TenantAsset?> GetAssetAsync(string tenantId, string assetId);
+    Task UpsertAssetAsync(string tenantId, TenantAsset asset);
+    Task<bool> DeleteAssetAsync(string tenantId, string assetId);
+
+    Task<IReadOnlyList<TopologyDocument>> ListTopologiesAsync(string tenantId);
+    Task<TopologyDocument?> GetTopologyAsync(string tenantId, string topologyId);
+    Task UpsertTopologyAsync(string tenantId, TopologyDocument topology);
+    Task<bool> DeleteTopologyAsync(string tenantId, string topologyId);
+
+    Task<IReadOnlyList<DetectionWorkflow>> ListWorkflowsAsync(string tenantId);
+    Task<DetectionWorkflow?> GetWorkflowAsync(string tenantId, string workflowId);
+    Task UpsertWorkflowAsync(string tenantId, DetectionWorkflow workflow);
+    Task<bool> DeleteWorkflowAsync(string tenantId, string workflowId);
 }

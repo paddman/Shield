@@ -7,7 +7,8 @@ const STORE = {
   key: "ntshield.operator.key",
   sessionKey: "ntshield.operator.session-key",
   active: "ntshield.operator.active",
-  username: "ntshield.operator.name"
+  username: "ntshield.operator.name",
+  tenant: "ntshield.operator.tenant"
 };
 
 const state = {
@@ -19,7 +20,8 @@ const state = {
   threats: [],
   signatures: [],
   onlineAgents: 0,
-  insights: []
+  insights: [],
+  tenantId: "default"
 };
 
 let toastTimer;
@@ -33,6 +35,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const rememberedName = localStorage.getItem(STORE.username);
   if (rememberedName) $("#username").value = rememberedName;
+  const rememberedTenant = localStorage.getItem(STORE.tenant);
+  if (rememberedTenant) state.tenantId = rememberedTenant;
+  if ($("#topologyTenant")) $("#topologyTenant").value = state.tenantId;
 
   const persistedKey = localStorage.getItem(STORE.key);
   const sessionKey = sessionStorage.getItem(STORE.sessionKey);
@@ -106,6 +111,14 @@ function bindDashboard() {
     persistCredential($("#settingsRemember").checked);
     await refreshData(true);
   });
+  $("#topologyTenant")?.addEventListener("change", () => {
+    state.tenantId = $("#topologyTenant").value.trim().toLowerCase() || "default";
+    $("#topologyTenant").value = state.tenantId;
+    localStorage.setItem(STORE.tenant, state.tenantId);
+    window.NTShieldTopology?.load({ resetSelection: true });
+  });
+  window.NTShieldTopology?.init({ requestJson, toast, getTenant: () => state.tenantId });
+  window.NTShieldDefenseMap?.init();
 }
 
 async function signIn({ quiet }) {
@@ -159,6 +172,7 @@ function logout() {
   state.apiKey = "";
   $("#apiKey").value = "";
   $("#dashboardView").hidden = true;
+  window.NTShieldDefenseMap?.setActive(false);
   $("#loginView").hidden = false;
   $("#loginMessage").textContent = "ออกจากระบบแล้ว";
 }
@@ -191,16 +205,26 @@ async function refreshData(notify) {
   }
 }
 
-async function requestJson(path) {
+async function requestJson(path, options = {}) {
   const headers = { Accept: "application/json" };
   if (state.apiKey) headers[API_KEY_HEADER] = state.apiKey;
-  const response = await fetch(path, { headers, credentials: "same-origin", cache: "no-store" });
+  if (state.tenantId) headers["X-NTShield-Tenant"] = state.tenantId;
+  if (options.body && typeof options.body !== "string") {
+    options = { ...options, body: JSON.stringify(options.body) };
+  }
+  const response = await fetch(path, {
+    ...options,
+    headers: { ...headers, ...(options.headers || {}) },
+    credentials: "same-origin",
+    cache: "no-store"
+  });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     const error = new Error(body.reason || body.error || `HTTP ${response.status}`);
     error.status = response.status;
     throw error;
   }
+  if (response.status === 204) return null;
   return response.json();
 }
 
@@ -230,110 +254,139 @@ function renderOverview() {
   const counts = severityCounts(state.incidents);
   const offline = Math.max(0, state.agents.length - state.onlineAgents);
   const score = clamp(100 - counts.critical * 8 - counts.high * 3 - counts.medium - offline * 2, 0, 100);
-  const statusText = score >= 85 ? "Good" : score >= 65 ? "Needs attention" : "At risk";
+  const threatEvents = state.incidents.reduce((sum, item) => {
+    const attempts = numeric(pick(item, "failedAttempts", "failedLogonCount"));
+    const evidence = asArray(pick(item, "evidenceEvents")).length;
+    return sum + Math.max(1, attempts, evidence);
+  }, 0);
 
-  $("#postureGauge").style.setProperty("--score", score);
-  $("#postureScore").textContent = score;
-  $("#postureLabel").textContent = statusText;
-  $("#postureLabel").style.color = score >= 85 ? "var(--green)" : score >= 65 ? "var(--orange)" : "var(--red)";
-  $("#identifyScore").textContent = `${clamp(84 - offline, 0, 100)}/100`;
-  $("#protectScore").textContent = `${clamp(88 - counts.high, 0, 100)}/100`;
-  $("#detectScore").textContent = `${clamp(92 - counts.critical * 2, 0, 100)}/100`;
-  $("#respondScore").textContent = `${clamp(86 - openIncidents.length, 0, 100)}/100`;
+  animateMetric("#defenseThreatEvents", threatEvents, value => value >= 1000 ? compact(value) : number(value));
+  animateMetric("#defenseCorrelated", state.incidents.length + state.threats.length, value => number(value));
+  animateMetric("#defenseScore", score, value => `${number(value)}%`);
+  animateMetric("#defenseAssets", state.agents.length, value => number(value));
+  $("#defenseMonitoring").textContent = `${number(state.onlineAgents)}/${number(state.agents.length)}`;
+  $("#defenseNeutralized").textContent = `${number(score)}%`;
+  $("#defenseLastUpdated").textContent = `Updated ${new Intl.DateTimeFormat("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date())}`;
 
-  $("#totalSignals").textContent = compact(state.incidents.reduce((sum, item) => sum + Math.max(1, numeric(pick(item, "failedAttempts", "failedLogonCount"))), 0));
-  $("#totalThreats").textContent = compact(state.threats.length);
-  $("#totalAgents").textContent = compact(state.agents.length);
-  $("#totalSignatures").textContent = compact(state.signatures.length);
-  $("#activeIncidentCount").textContent = number(openIncidents.length);
-  $("#assetTotal").textContent = number(state.agents.length);
-  $("#severityTotal").textContent = number(state.incidents.length);
+  renderDefenseThreats(openIncidents);
+  renderDefenseMiniMap(openIncidents, state.threats);
+  renderDefenseImpact(score);
 
-  renderIncidentPreview(openIncidents);
-  renderAssetDonut(offline);
-  renderSeverity(counts);
-  renderTrend();
+  $("#defenseBehavioralStatus").textContent = state.agents.length ? "Active" : "Waiting";
+  $("#defenseIntelStatus").textContent = state.signatures.length ? "Active" : "Loading";
+  $("#statusNetwork").textContent = counts.critical ? "At Risk" : "Secure";
+  $("#statusEndpoints").textContent = offline ? `${number(offline)} Offline` : "Secure";
+  $("#statusApplications").textContent = counts.high ? "Watching" : "Secure";
+  $("#statusCloud").textContent = state.agents.length ? "Monitored" : "Waiting";
+  $("#statusData").textContent = counts.critical ? "Investigate" : "Protected";
+
+  window.NTShieldDefenseMap?.update({
+    incidents: openIncidents,
+    threats: state.threats,
+    onlineAgents: state.onlineAgents,
+    score
+  });
 }
 
-function renderIncidentPreview(incidents) {
-  const host = $("#incidentPreview");
+function renderDefenseThreats(incidents) {
+  const host = $("#defenseThreatList");
+  if (!host) return;
   host.replaceChildren();
-  const sorted = [...incidents].sort((a, b) => incidentDate(b) - incidentDate(a)).slice(0, 5);
-  if (!sorted.length) {
-    host.className = "incident-list empty-state";
-    host.textContent = "ยังไม่มี Incident เปิดอยู่";
+  const rows = [...incidents].sort((a, b) => incidentDate(b) - incidentDate(a)).slice(0, 5);
+  if (!rows.length) {
+    const empty = element("p", "defense-empty", "ไม่พบ Active Threat — ระบบยังเฝ้าระวังต่อเนื่อง");
+    host.append(empty);
     return;
   }
-  host.className = "incident-list";
-  sorted.forEach(item => {
+  rows.forEach(item => {
     const severity = severityName(pick(item, "severity"));
-    const row = element("div", "incident-row");
-    row.append(element("i", severity.toLowerCase()));
-    const detail = element("div");
-    detail.append(element("strong", "", pick(item, "title") || "Untitled incident"));
-    detail.append(element("small", "", routeText(item)));
-    row.append(detail, element("time", "", relativeTime(incidentDate(item))));
+    const row = element("div", `defense-threat-row ${severity.toLowerCase()}`);
+    const icon = element("span", "defense-threat-icon", severity === "Critical" ? "!" : "△");
+    const copy = element("span", "defense-threat-copy");
+    copy.append(
+      element("b", "", pick(item, "title") || "Suspicious activity"),
+      element("small", "", routeText(item))
+    );
+    const risk = severity === "Critical" || severity === "High" ? "High Risk" : `${severity} Risk`;
+    row.append(icon, copy, element("span", "defense-threat-risk", risk));
     host.append(row);
   });
 }
 
-function renderAssetDonut(offline) {
-  const online = state.agents.filter(isAgentOnline);
-  const win = online.filter(item => String(pick(item, "platform", "osVersion") || "").toLowerCase().includes("win")).length;
-  const linux = Math.max(0, online.length - win);
-  const total = Math.max(1, state.agents.length);
-  const winPct = win / total * 100;
-  const onlinePct = (win + linux) / total * 100;
-  $("#assetDonut").style.setProperty("--windows", `${winPct}%`);
-  $("#assetDonut").style.setProperty("--online", `${onlinePct}%`);
-  $("#windowsCount").textContent = number(win);
-  $("#linuxCount").textContent = number(linux);
-  $("#offlineCount").textContent = number(offline);
-}
-
-function renderSeverity(counts) {
-  const total = Math.max(1, state.incidents.length);
-  const critical = counts.critical / total * 100;
-  const high = critical + counts.high / total * 100;
-  const medium = high + counts.medium / total * 100;
-  const donut = $("#severityDonut");
-  donut.style.setProperty("--critical", `${critical}%`);
-  donut.style.setProperty("--high", `${high}%`);
-  donut.style.setProperty("--medium", `${medium}%`);
-  const legend = $("#severityLegend");
-  legend.replaceChildren();
-  ["Critical", "High", "Medium", "Low"].forEach(label => {
-    const key = label.toLowerCase();
-    const row = element("span");
-    row.append(element("i", key), document.createTextNode(label), element("b", "", number(counts[key])));
-    legend.append(row);
+function renderDefenseMiniMap(incidents, threats) {
+  const host = $("#defenseMapDots");
+  if (!host) return;
+  host.replaceChildren();
+  const signals = [...incidents, ...threats].slice(0, 36);
+  signals.forEach((item, index) => {
+    const identity = [pick(item, "sourceIp"), pick(item, "sourceHost"), pick(item, "campaignId"), pick(item, "incidentId"), index].join("|");
+    const hash = stableHash(identity);
+    const dot = element("i", `defense-map-dot ${severityName(pick(item, "severity")).toLowerCase()}`);
+    dot.style.left = `${7 + hash % 86}%`;
+    dot.style.top = `${18 + Math.floor(hash / 97) % 65}%`;
+    dot.style.animationDelay = `${-(hash % 2500)}ms`;
+    host.append(dot);
   });
 }
 
-function renderTrend() {
+function renderDefenseImpact(score) {
   const now = new Date();
   const days = [];
   for (let offset = 6; offset >= 0; offset--) {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset);
-    days.push({ day, key: day.toISOString().slice(0, 10), count: 0 });
+    days.push({ key: day.toISOString().slice(0, 10), count: 0 });
   }
   state.incidents.forEach(item => {
     const date = incidentDate(item);
-    if (!Number.isFinite(date.getTime())) return;
+    if (!date.getTime()) return;
     const key = new Date(date.getFullYear(), date.getMonth(), date.getDate()).toISOString().slice(0, 10);
-    const bucket = days.find(day => day.key === key);
-    if (bucket) bucket.count++;
+    const day = days.find(candidate => candidate.key === key);
+    if (day) day.count++;
   });
   const max = Math.max(1, ...days.map(day => day.count));
   const points = days.map((day, index) => {
-    const x = 20 + index * 110;
-    const y = 160 - day.count / max * 125;
-    return `${x},${y.toFixed(1)}`;
-  }).join(" ");
-  $("#trendLine").setAttribute("points", points);
-  $("#trendArea").setAttribute("points", `20,160 ${points} 680,160`);
-  const labels = $("#trendLabels");
-  labels.replaceChildren(...days.map(day => element("span", "", new Intl.DateTimeFormat("th-TH", { weekday: "short" }).format(day.day))));
+    const x = 10 + index * (280 / 6);
+    const y = 105 - day.count / max * 78;
+    return { x, y };
+  });
+  $("#defenseImpactLine").setAttribute("points", points.map(point => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "));
+  $("#defenseImpactArea").setAttribute("d", `M10 115 L${points.map(point => `${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" L")} L290 115 Z`);
+  const dots = $("#defenseImpactDots");
+  dots.replaceChildren();
+  points.forEach(point => {
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", point.x); circle.setAttribute("cy", point.y); circle.setAttribute("r", "3");
+    dots.append(circle);
+  });
+  $("#defenseImpactChart").setAttribute("aria-label", `Seven day defense impact, current score ${score} percent`);
+}
+
+function animateMetric(selector, target, formatter) {
+  const node = $(selector);
+  if (!node) return;
+  const start = Number(node.dataset.metricValue || 0);
+  const end = Math.max(0, Number(target) || 0);
+  const started = performance.now();
+  const duration = 620;
+  if (node._metricFrame) cancelAnimationFrame(node._metricFrame);
+  const step = time => {
+    const progress = Math.min(1, (time - started) / duration);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const current = Math.round(start + (end - start) * eased);
+    node.textContent = formatter(current);
+    if (progress < 1) node._metricFrame = requestAnimationFrame(step);
+    else { node.dataset.metricValue = String(end); node._metricFrame = 0; }
+  };
+  node._metricFrame = requestAnimationFrame(step);
+}
+
+function stableHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 function renderIncidentTable() {
@@ -453,6 +506,7 @@ function renderFeed() {
 function renderInsights() {
   for (const selector of ["#analystInsights", "#analystPageInsights"]) {
     const host = $(selector);
+    if (!host) continue;
     host.replaceChildren(...state.insights.map(text => element("li", "", text)));
   }
 }
@@ -476,7 +530,10 @@ function showPage(name) {
   $$(".page").forEach(node => node.classList.toggle("active", node.dataset.page === page));
   $$('[data-nav]').forEach(node => node.classList.toggle("active", node.dataset.nav === page));
   $("#sidebar").classList.remove("open");
+  $("#dashboardView").classList.toggle("overview-active", page === "overview");
+  window.NTShieldDefenseMap?.setActive(page === "overview");
   window.scrollTo({ top: 0, behavior: "smooth" });
+  if (page === "topology") window.NTShieldTopology?.load();
 }
 
 function setConnection(connected, text) {

@@ -76,6 +76,7 @@ builder.Services.AddSingleton<CrossHostCorrelator>();
 builder.Services.AddSingleton<LateralMovementTracker>();
 builder.Services.AddSingleton<IngestService>();
 builder.Services.AddSingleton<ActionService>();
+builder.Services.AddSingleton<TopologyService>();
 
 // Agent may send gzip-compressed ingest batches (body > ~4KB). Without this, ASP.NET returns 400 BadRequest.
 builder.Services.AddRequestDecompression();
@@ -185,6 +186,21 @@ app.UseStaticFiles(new StaticFileOptions
 app.UseRequestDecompression();
 app.UseResponseCompression();
 app.UseMiddleware<ApiKeyAuthMiddleware>();
+app.Use(async (ctx, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (TopologyValidationException ex)
+    {
+        if (!ctx.Response.HasStarted)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await ctx.Response.WriteAsJsonAsync(new { error = "validation_error", detail = ex.Message });
+        }
+    }
+});
 app.Use(async (ctx, next) =>
 {
     // Structured audit for mutating calls
@@ -426,6 +442,136 @@ app.MapPost("/api/v1/ingest", async (AgentIngestBatch? batch, IngestService inge
     return Results.Ok(result);
 });
 
+// Tenant-scoped infrastructure catalog, Canvas topology and declarative
+// detection workflow APIs. The tenant header defaults to "default" for the
+// existing single-tenant dashboard; deployments should set it from an
+// authenticated tenant claim when the Central identity layer is enabled.
+app.MapGet("/api/v1/topology/kinds", () => Results.Ok(TopologyService.NodeKinds));
+
+app.MapGet("/api/v1/assets", async (TopologyService topology, HttpContext http) =>
+    Results.Ok(await topology.ListAssetsAsync(TopologyService.ResolveTenantId(http))));
+
+app.MapGet("/api/v1/assets/{id}", async (string id, TopologyService topology, HttpContext http) =>
+{
+    var asset = await topology.GetAssetAsync(TopologyService.ResolveTenantId(http), id);
+    return asset is null ? Results.NotFound() : Results.Ok(asset);
+});
+
+app.MapPost("/api/v1/assets", async (TenantAsset? asset, TopologyService topology, ICentralStore store, HttpContext http) =>
+{
+    if (asset is null) return Results.BadRequest(new { error = "invalid_asset" });
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var saved = await topology.SaveAssetAsync(tenantId, asset);
+    await store.AppendAuditAsync(OperatorActor(http), "asset.upsert", saved.AssetId, "success",
+        JsonSerializer.Serialize(new { tenantId, saved.Kind, saved.Name }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Created($"/api/v1/assets/{saved.AssetId}", saved);
+});
+
+app.MapPut("/api/v1/assets/{id}", async (string id, TenantAsset? asset, TopologyService topology, ICentralStore store, HttpContext http) =>
+{
+    if (asset is null) return Results.BadRequest(new { error = "invalid_asset" });
+    asset.AssetId = id;
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var existing = await topology.GetAssetAsync(tenantId, id);
+    if (existing is null) return Results.NotFound();
+    var saved = await topology.SaveAssetAsync(tenantId, asset);
+    await store.AppendAuditAsync(OperatorActor(http), "asset.update", saved.AssetId, "success",
+        JsonSerializer.Serialize(new { tenantId, saved.Kind, saved.Name }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Ok(saved);
+});
+
+app.MapDelete("/api/v1/assets/{id}", async (string id, TopologyService topology, ICentralStore store, HttpContext http) =>
+{
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var deleted = await topology.DeleteAssetAsync(tenantId, id);
+    if (!deleted) return Results.NotFound();
+    await store.AppendAuditAsync(OperatorActor(http), "asset.delete", id, "success",
+        JsonSerializer.Serialize(new { tenantId }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.NoContent();
+});
+
+app.MapGet("/api/v1/topologies", async (TopologyService topology, HttpContext http) =>
+    Results.Ok(await topology.ListTopologiesAsync(TopologyService.ResolveTenantId(http))));
+
+app.MapGet("/api/v1/topologies/{id}", async (string id, TopologyService topology, HttpContext http) =>
+{
+    var item = await topology.GetTopologyAsync(TopologyService.ResolveTenantId(http), id);
+    return item is null ? Results.NotFound() : Results.Ok(item);
+});
+
+app.MapPost("/api/v1/topologies", async (TopologyDocument? document, TopologyService topology, ICentralStore store, HttpContext http) =>
+{
+    if (document is null) return Results.BadRequest(new { error = "invalid_topology" });
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var saved = await topology.SaveTopologyAsync(tenantId, document);
+    await store.AppendAuditAsync(OperatorActor(http), "topology.upsert", saved.TopologyId, "success",
+        JsonSerializer.Serialize(new { tenantId, saved.Name, nodes = saved.Nodes.Count, edges = saved.Edges.Count }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Created($"/api/v1/topologies/{saved.TopologyId}", saved);
+});
+
+app.MapPut("/api/v1/topologies/{id}", async (string id, TopologyDocument? document, TopologyService topology, ICentralStore store, HttpContext http) =>
+{
+    if (document is null) return Results.BadRequest(new { error = "invalid_topology" });
+    var tenantId = TopologyService.ResolveTenantId(http);
+    if (await topology.GetTopologyAsync(tenantId, id) is null) return Results.NotFound();
+    document.TopologyId = id;
+    var saved = await topology.SaveTopologyAsync(tenantId, document);
+    await store.AppendAuditAsync(OperatorActor(http), "topology.update", saved.TopologyId, "success",
+        JsonSerializer.Serialize(new { tenantId, saved.Name, nodes = saved.Nodes.Count, edges = saved.Edges.Count }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Ok(saved);
+});
+
+app.MapDelete("/api/v1/topologies/{id}", async (string id, TopologyService topology, ICentralStore store, HttpContext http) =>
+{
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var deleted = await topology.DeleteTopologyAsync(tenantId, id);
+    if (!deleted) return Results.NotFound();
+    await store.AppendAuditAsync(OperatorActor(http), "topology.delete", id, "success",
+        JsonSerializer.Serialize(new { tenantId }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.NoContent();
+});
+
+app.MapGet("/api/v1/workflows", async (TopologyService topology, HttpContext http) =>
+    Results.Ok(await topology.ListWorkflowsAsync(TopologyService.ResolveTenantId(http))));
+
+app.MapGet("/api/v1/workflows/{id}", async (string id, TopologyService topology, HttpContext http) =>
+{
+    var item = await topology.GetWorkflowAsync(TopologyService.ResolveTenantId(http), id);
+    return item is null ? Results.NotFound() : Results.Ok(item);
+});
+
+app.MapPost("/api/v1/workflows", async (DetectionWorkflow? workflow, TopologyService topology, ICentralStore store, HttpContext http) =>
+{
+    if (workflow is null) return Results.BadRequest(new { error = "invalid_workflow" });
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var saved = await topology.SaveWorkflowAsync(tenantId, workflow);
+    await store.AppendAuditAsync(OperatorActor(http), "workflow.upsert", saved.WorkflowId, "success",
+        JsonSerializer.Serialize(new { tenantId, saved.Name, saved.Enabled, nodes = saved.Nodes.Count, edges = saved.Edges.Count }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Created($"/api/v1/workflows/{saved.WorkflowId}", saved);
+});
+
+app.MapPut("/api/v1/workflows/{id}", async (string id, DetectionWorkflow? workflow, TopologyService topology, ICentralStore store, HttpContext http) =>
+{
+    if (workflow is null) return Results.BadRequest(new { error = "invalid_workflow" });
+    var tenantId = TopologyService.ResolveTenantId(http);
+    if (await topology.GetWorkflowAsync(tenantId, id) is null) return Results.NotFound();
+    workflow.WorkflowId = id;
+    var saved = await topology.SaveWorkflowAsync(tenantId, workflow);
+    await store.AppendAuditAsync(OperatorActor(http), "workflow.update", saved.WorkflowId, "success",
+        JsonSerializer.Serialize(new { tenantId, saved.Name, saved.Enabled, nodes = saved.Nodes.Count, edges = saved.Edges.Count }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Ok(saved);
+});
+
+app.MapDelete("/api/v1/workflows/{id}", async (string id, TopologyService topology, ICentralStore store, HttpContext http) =>
+{
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var deleted = await topology.DeleteWorkflowAsync(tenantId, id);
+    if (!deleted) return Results.NotFound();
+    await store.AppendAuditAsync(OperatorActor(http), "workflow.delete", id, "success",
+        JsonSerializer.Serialize(new { tenantId }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.NoContent();
+});
+
 app.MapPost("/api/v1/incidents", async (Incident incident, ICentralStore store) =>
 {
     await store.UpsertIncidentAsync(incident);
@@ -542,6 +688,13 @@ static bool FixedTimeEquals(string a, string b)
     var bb = System.Text.Encoding.UTF8.GetBytes(b ?? "");
     return ba.Length == bb.Length &&
            System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(ba, bb);
+}
+
+static string OperatorActor(HttpContext http)
+{
+    return http.Items.TryGetValue(ApiKeyAuthMiddleware.PrincipalItem, out var principal)
+        ? principal?.ToString() ?? "anonymous"
+        : "anonymous";
 }
 
 /// <summary>

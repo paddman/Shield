@@ -255,6 +255,56 @@ public sealed class SqliteCentralStore : ICentralStore
                 await metricsTbl.ExecuteNonQueryAsync();
             }
 
+            await using (var topologyTbl = conn.CreateCommand())
+            {
+                topologyTbl.CommandText =
+                    """
+                    CREATE TABLE IF NOT EXISTS tenant_assets (
+                        asset_id TEXT PRIMARY KEY,
+                        tenant_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        hostname TEXT,
+                        address TEXT,
+                        environment TEXT NOT NULL,
+                        criticality TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        description TEXT,
+                        tags_json TEXT NOT NULL,
+                        metadata_json TEXT NOT NULL,
+                        created_at_utc TEXT NOT NULL,
+                        updated_at_utc TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_tenant_assets_tenant ON tenant_assets(tenant_id, updated_at_utc);
+
+                    CREATE TABLE IF NOT EXISTS topology_documents (
+                        topology_id TEXT PRIMARY KEY,
+                        tenant_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        description TEXT,
+                        version INTEGER NOT NULL,
+                        payload TEXT NOT NULL,
+                        created_at_utc TEXT NOT NULL,
+                        updated_at_utc TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_topology_documents_tenant ON topology_documents(tenant_id, updated_at_utc);
+
+                    CREATE TABLE IF NOT EXISTS detection_workflows (
+                        workflow_id TEXT PRIMARY KEY,
+                        tenant_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        topology_id TEXT,
+                        enabled INTEGER NOT NULL,
+                        version INTEGER NOT NULL,
+                        payload TEXT NOT NULL,
+                        created_at_utc TEXT NOT NULL,
+                        updated_at_utc TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_detection_workflows_tenant ON detection_workflows(tenant_id, updated_at_utc);
+                    """;
+                await topologyTbl.ExecuteNonQueryAsync();
+            }
+
             // Default policy if missing
             await using (var seed = conn.CreateCommand())
             {
@@ -1224,5 +1274,289 @@ public sealed class SqliteCentralStore : ICentralStore
         await reader.DisposeAsync();
         item.MetricsHistory = (await ListAgentMetricsAsync(agentId, metricsTake)).ToList();
         return item;
+    }
+
+    public async Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT asset_id, tenant_id, name, kind, hostname, address, environment, criticality, status, description, tags_json, metadata_json, created_at_utc, updated_at_utc " +
+            "FROM tenant_assets WHERE tenant_id=$tenant ORDER BY name COLLATE NOCASE, asset_id;";
+        cmd.Parameters.AddWithValue("$tenant", tenantId);
+        var list = new List<TenantAsset>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            list.Add(ReadAsset(reader));
+        return list;
+    }
+
+    public async Task<TenantAsset?> GetAssetAsync(string tenantId, string assetId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT asset_id, tenant_id, name, kind, hostname, address, environment, criticality, status, description, tags_json, metadata_json, created_at_utc, updated_at_utc " +
+            "FROM tenant_assets WHERE tenant_id=$tenant AND asset_id=$id LIMIT 1;";
+        cmd.Parameters.AddWithValue("$tenant", tenantId);
+        cmd.Parameters.AddWithValue("$id", assetId);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        return await reader.ReadAsync() ? ReadAsset(reader) : null;
+    }
+
+    public async Task UpsertAssetAsync(string tenantId, TenantAsset asset)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                """
+                INSERT INTO tenant_assets(
+                    asset_id, tenant_id, name, kind, hostname, address, environment, criticality, status,
+                    description, tags_json, metadata_json, created_at_utc, updated_at_utc)
+                VALUES ($id, $tenant, $name, $kind, $hostname, $address, $environment, $criticality, $status,
+                    $description, $tags, $metadata, $created, $updated)
+                ON CONFLICT(asset_id) DO UPDATE SET
+                    name=excluded.name,
+                    kind=excluded.kind,
+                    hostname=excluded.hostname,
+                    address=excluded.address,
+                    environment=excluded.environment,
+                    criticality=excluded.criticality,
+                    status=excluded.status,
+                    description=excluded.description,
+                    tags_json=excluded.tags_json,
+                    metadata_json=excluded.metadata_json,
+                    updated_at_utc=excluded.updated_at_utc
+                WHERE tenant_assets.tenant_id=excluded.tenant_id;
+                """;
+            cmd.Parameters.AddWithValue("$id", asset.AssetId);
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+            cmd.Parameters.AddWithValue("$name", asset.Name);
+            cmd.Parameters.AddWithValue("$kind", asset.Kind);
+            cmd.Parameters.AddWithValue("$hostname", (object?)asset.Hostname ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$address", (object?)asset.Address ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$environment", asset.Environment);
+            cmd.Parameters.AddWithValue("$criticality", asset.Criticality);
+            cmd.Parameters.AddWithValue("$status", asset.Status);
+            cmd.Parameters.AddWithValue("$description", (object?)asset.Description ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$tags", JsonSerializer.Serialize(asset.Tags, JsonOptions));
+            cmd.Parameters.AddWithValue("$metadata", JsonSerializer.Serialize(asset.Metadata, JsonOptions));
+            cmd.Parameters.AddWithValue("$created", asset.CreatedAtUtc.ToString("O"));
+            cmd.Parameters.AddWithValue("$updated", asset.UpdatedAtUtc.ToString("O"));
+            await cmd.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<bool> DeleteAssetAsync(string tenantId, string assetId)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM tenant_assets WHERE tenant_id=$tenant AND asset_id=$id;";
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+            cmd.Parameters.AddWithValue("$id", assetId);
+            return await cmd.ExecuteNonQueryAsync() > 0;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<TopologyDocument>> ListTopologiesAsync(string tenantId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT payload FROM topology_documents WHERE tenant_id=$tenant ORDER BY updated_at_utc DESC, topology_id;";
+        cmd.Parameters.AddWithValue("$tenant", tenantId);
+        var list = new List<TopologyDocument>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var item = JsonSerializer.Deserialize<TopologyDocument>(reader.GetString(0), JsonOptions);
+            if (item is not null) list.Add(item);
+        }
+        return list;
+    }
+
+    public async Task<TopologyDocument?> GetTopologyAsync(string tenantId, string topologyId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT payload FROM topology_documents WHERE tenant_id=$tenant AND topology_id=$id LIMIT 1;";
+        cmd.Parameters.AddWithValue("$tenant", tenantId);
+        cmd.Parameters.AddWithValue("$id", topologyId);
+        var payload = await cmd.ExecuteScalarAsync();
+        return payload is string json ? JsonSerializer.Deserialize<TopologyDocument>(json, JsonOptions) : null;
+    }
+
+    public async Task UpsertTopologyAsync(string tenantId, TopologyDocument topology)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                """
+                INSERT INTO topology_documents(topology_id, tenant_id, name, description, version, payload, created_at_utc, updated_at_utc)
+                VALUES ($id, $tenant, $name, $description, $version, $payload, $created, $updated)
+                ON CONFLICT(topology_id) DO UPDATE SET
+                    name=excluded.name,
+                    description=excluded.description,
+                    version=excluded.version,
+                    payload=excluded.payload,
+                    updated_at_utc=excluded.updated_at_utc
+                WHERE topology_documents.tenant_id=excluded.tenant_id;
+                """;
+            cmd.Parameters.AddWithValue("$id", topology.TopologyId);
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+            cmd.Parameters.AddWithValue("$name", topology.Name);
+            cmd.Parameters.AddWithValue("$description", (object?)topology.Description ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$version", topology.Version);
+            cmd.Parameters.AddWithValue("$payload", JsonSerializer.Serialize(topology, JsonOptions));
+            cmd.Parameters.AddWithValue("$created", topology.CreatedAtUtc.ToString("O"));
+            cmd.Parameters.AddWithValue("$updated", topology.UpdatedAtUtc.ToString("O"));
+            await cmd.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<bool> DeleteTopologyAsync(string tenantId, string topologyId)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM topology_documents WHERE tenant_id=$tenant AND topology_id=$id;";
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+            cmd.Parameters.AddWithValue("$id", topologyId);
+            return await cmd.ExecuteNonQueryAsync() > 0;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<DetectionWorkflow>> ListWorkflowsAsync(string tenantId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT payload FROM detection_workflows WHERE tenant_id=$tenant ORDER BY updated_at_utc DESC, workflow_id;";
+        cmd.Parameters.AddWithValue("$tenant", tenantId);
+        var list = new List<DetectionWorkflow>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var item = JsonSerializer.Deserialize<DetectionWorkflow>(reader.GetString(0), JsonOptions);
+            if (item is not null) list.Add(item);
+        }
+        return list;
+    }
+
+    public async Task<DetectionWorkflow?> GetWorkflowAsync(string tenantId, string workflowId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT payload FROM detection_workflows WHERE tenant_id=$tenant AND workflow_id=$id LIMIT 1;";
+        cmd.Parameters.AddWithValue("$tenant", tenantId);
+        cmd.Parameters.AddWithValue("$id", workflowId);
+        var payload = await cmd.ExecuteScalarAsync();
+        return payload is string json ? JsonSerializer.Deserialize<DetectionWorkflow>(json, JsonOptions) : null;
+    }
+
+    public async Task UpsertWorkflowAsync(string tenantId, DetectionWorkflow workflow)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                """
+                INSERT INTO detection_workflows(workflow_id, tenant_id, name, topology_id, enabled, version, payload, created_at_utc, updated_at_utc)
+                VALUES ($id, $tenant, $name, $topology, $enabled, $version, $payload, $created, $updated)
+                ON CONFLICT(workflow_id) DO UPDATE SET
+                    name=excluded.name,
+                    topology_id=excluded.topology_id,
+                    enabled=excluded.enabled,
+                    version=excluded.version,
+                    payload=excluded.payload,
+                    updated_at_utc=excluded.updated_at_utc
+                WHERE detection_workflows.tenant_id=excluded.tenant_id;
+                """;
+            cmd.Parameters.AddWithValue("$id", workflow.WorkflowId);
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+            cmd.Parameters.AddWithValue("$name", workflow.Name);
+            cmd.Parameters.AddWithValue("$topology", (object?)workflow.TopologyId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$enabled", workflow.Enabled ? 1 : 0);
+            cmd.Parameters.AddWithValue("$version", workflow.Version);
+            cmd.Parameters.AddWithValue("$payload", JsonSerializer.Serialize(workflow, JsonOptions));
+            cmd.Parameters.AddWithValue("$created", workflow.CreatedAtUtc.ToString("O"));
+            cmd.Parameters.AddWithValue("$updated", workflow.UpdatedAtUtc.ToString("O"));
+            await cmd.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<bool> DeleteWorkflowAsync(string tenantId, string workflowId)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM detection_workflows WHERE tenant_id=$tenant AND workflow_id=$id;";
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+            cmd.Parameters.AddWithValue("$id", workflowId);
+            return await cmd.ExecuteNonQueryAsync() > 0;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private static TenantAsset ReadAsset(SqliteDataReader reader)
+    {
+        var tags = JsonSerializer.Deserialize<List<string>>(reader.GetString(10), JsonOptions) ?? [];
+        var metadata = JsonSerializer.Deserialize<Dictionary<string, string>>(reader.GetString(11), JsonOptions)
+                       ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        return new TenantAsset
+        {
+            AssetId = reader.GetString(0),
+            TenantId = reader.GetString(1),
+            Name = reader.GetString(2),
+            Kind = reader.GetString(3),
+            Hostname = reader.IsDBNull(4) ? null : reader.GetString(4),
+            Address = reader.IsDBNull(5) ? null : reader.GetString(5),
+            Environment = reader.GetString(6),
+            Criticality = reader.GetString(7),
+            Status = reader.GetString(8),
+            Description = reader.IsDBNull(9) ? null : reader.GetString(9),
+            Tags = tags,
+            Metadata = metadata,
+            CreatedAtUtc = DateTimeOffset.Parse(reader.GetString(12)),
+            UpdatedAtUtc = DateTimeOffset.Parse(reader.GetString(13))
+        };
     }
 }
