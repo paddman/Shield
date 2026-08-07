@@ -1,21 +1,58 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 220" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 260" role="img" aria-labelledby="title desc">
   <title id="title">NT Shield</title>
-  <desc id="desc">NT Shield wordmark with signal bars and protective shield</desc>
+  <desc id="desc">NT Shield wordmark with signal bars and an open protective shield curve</desc>
   <defs>
     <linearGradient id="ntYellow" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#FFD447"/>
-      <stop offset="1" stop-color="#F5B800"/>
+      <stop offset="0.55" stop-color="#FFC400"/>
+      <stop offset="1" stop-color="#F2A900"/>
     </linearGradient>
   </defs>
+
   <g fill="url(#ntYellow)">
-    <rect x="24" y="76" width="14" height="52" rx="7"/>
-    <rect x="48" y="58" width="14" height="88" rx="7"/>
-    <circle cx="78" cy="102" r="8"/>
-    <rect x="94" y="70" width="14" height="64" rx="7"/>
+    <rect x="31" y="86" width="16" height="64" rx="8"/>
+    <rect x="61" y="62" width="16" height="112" rx="8"/>
+    <circle cx="98" cy="118" r="9"/>
+    <rect x="119" y="86" width="16" height="64" rx="8"/>
   </g>
-  <text x="132" y="139" fill="#171C26" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="112" font-weight="800" letter-spacing="-8">NT</text>
-  <path d="M365 50 454 92v58c0 54-37 91-89 112-52-21-89-58-89-112V92z"
-        transform="translate(38 -21) scale(.78)" fill="none" stroke="url(#ntYellow)" stroke-width="12" stroke-linejoin="round"/>
-  <text x="400" y="132" fill="#303744" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="66" font-weight="650">Shield</text>
-  <text x="136" y="184" fill="#667085" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="24" font-weight="500" letter-spacing="4">SECURE • PROTECT • PERFORM</text>
+
+  <text x="160" y="164"
+        fill="#111827"
+        font-family="Inter, 'Segoe UI', Arial, sans-serif"
+        font-size="132"
+        font-weight="800"
+        letter-spacing="-9">NT</text>
+
+  <path d="M351 61
+           C388 47 434 47 472 55
+           C483 57 489 65 489 76
+           V109
+           C489 145 473 172 449 191
+           C429 206 409 216 391 222
+           C375 216 361 208 348 198"
+        fill="none"
+        stroke="url(#ntYellow)"
+        stroke-width="11"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <text x="520" y="159"
+        fill="#111827"
+        font-family="Inter, 'Segoe UI', Arial, sans-serif"
+        font-size="76"
+        font-weight="650">Shield</text>
+
+  <g font-family="Inter, 'Segoe UI', Arial, sans-serif"
+     font-size="25"
+     font-weight="500"
+     letter-spacing="5"
+     fill="#667085">
+    <text x="249" y="243" text-anchor="middle">SECURE</text>
+    <text x="447" y="243" text-anchor="middle">PROTECT</text>
+    <text x="661" y="243" text-anchor="middle">PERFORM</text>
+  </g>
+  <g fill="#F5B800">
+    <circle cx="348" cy="235" r="5"/>
+    <circle cx="558" cy="235" r="5"/>
+  </g>
 </svg>
