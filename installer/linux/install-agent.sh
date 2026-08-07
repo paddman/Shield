@@ -186,7 +186,7 @@ with open(p) as f:
     j = json.load(f)
 j.setdefault("Server", {})
 j["Server"]["Url"] = r"""$CENTRAL_URL"""
-j["Server"]["AllowUntrustedServerCertificate"] = ($ALLOW_UNTRUSTED == "true")
+j["Server"]["AllowUntrustedServerCertificate"] = (r"""$ALLOW_UNTRUSTED""".lower() == "true")
 j["Server"]["HeartbeatIntervalSeconds"] = j["Server"].get("HeartbeatIntervalSeconds", 60)
 et = r"""$ENROLLMENT_TOKEN"""
 ak = r"""$API_KEY"""

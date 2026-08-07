@@ -1,0 +1,13 @@
+{
+    email admin@yaksaonline.com
+}
+
+yaksaonline.com {
+    encode gzip
+
+    reverse_proxy https://127.0.0.1:7443 {
+        transport http {
+            tls_insecure_skip_verify
+        }
+    }
+}

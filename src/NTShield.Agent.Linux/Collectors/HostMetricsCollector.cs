@@ -31,7 +31,7 @@ internal sealed class HostMetricsCollector
             var dIdle = cpu.IdleAll - _prevCpu.IdleAll;
             var dTotal = cpu.Total - _prevCpu.Total;
             if (dTotal > 0)
-                cpuPct = Math.Clamp(100.0 * (1.0 - (dIdle / dTotal)), 0, 100);
+                cpuPct = Math.Clamp(100.0 * (1.0 - ((double)dIdle / dTotal)), 0, 100);
         }
 
         double rxBps = 0, txBps = 0;
