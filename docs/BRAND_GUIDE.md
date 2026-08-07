@@ -16,12 +16,12 @@ NT Shield uses a bright, trustworthy enterprise-security language rather than a 
 
 ## Assets
 
-- `assets/branding/ntshield-wordmark.svg` is the editable horizontal wordmark.
+- `assets/branding/ntshield-wordmark.png` is the primary horizontal NT Shield logo supplied for the product UI.
 - `assets/branding/ntshield-app-icon.svg` is the editable square application mark.
 - `assets/branding/ntshield-platform-hero.png` is the generated hero/background plate used by the web login.
 - `docs/design-reference/` contains the supplied mobile login, desktop login, and dashboard references.
 
-Keep product copy in HTML/XAML instead of baking it into bitmap artwork. This preserves accessibility, localization, and responsive layouts.
+Keep product copy in HTML/XAML where possible. The primary logo artwork includes the supplied `SECURE • PROTECT • PERFORM` lockup; product descriptions remain live text for accessibility, localization, and responsive layouts.
 
 ## Typography
 
