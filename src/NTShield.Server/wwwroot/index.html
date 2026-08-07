@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="th">
 <head>
   <meta charset="utf-8">
@@ -11,21 +11,39 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main id="loginView" class="login-shell">
+  <div id="loginView" class="login-shell">
+    <div class="login-atmosphere" aria-hidden="true">
+      <div class="cyber-grid"></div>
+      <div class="scan-beam"></div>
+      <i class="signal signal-one"></i>
+      <i class="signal signal-two"></i>
+      <i class="signal signal-three"></i>
+      <div class="orbit orbit-one"><span></span></div>
+      <div class="orbit orbit-two"><span></span></div>
+    </div>
+
     <section class="login-story" aria-labelledby="storyTitle">
       <img class="story-logo" src="assets/ntshield-wordmark.svg" alt="NT Shield">
+      <div class="story-status"><i></i><span>SOVEREIGN AI DEFENSE</span><b>ONLINE</b></div>
       <p class="eyebrow">UNIFIED AI CYBER DEFENSE AS A SERVICE</p>
-      <h1 id="storyTitle">เห็นภัยไว<br>รับมือได้ในที่เดียว</h1>
+      <h1 id="storyTitle">เห็นภัยไว<br><span>รับมือได้</span>ในที่เดียว</h1>
       <p class="story-copy">รวม Agent, Central, Threat Correlation และ AI Analyst เพื่อให้ทีมดูแลระบบเห็นเหตุการณ์สำคัญและตัดสินใจได้เร็วขึ้น</p>
-      <div class="promise-list" aria-label="NT Shield capabilities">
-        <article><span aria-hidden="true">✓</span><div><strong>Secure</strong><small>เฝ้าระวัง Endpoint และ Server หลายระบบ</small></div></article>
-        <article><span aria-hidden="true">◎</span><div><strong>Protect</strong><small>เชื่อมโยง Incident และตอบสนองแบบมีผู้อนุมัติ</small></div></article>
-        <article><span aria-hidden="true">▥</span><div><strong>Perform</strong><small>ภาพรวมเดียวสำหรับทีม SOC และผู้ดูแลระบบ</small></div></article>
-      </div>
+      <ul class="promise-list" aria-label="NT Shield capabilities">
+        <li><span aria-hidden="true">01</span><div><strong>Secure</strong><small>เฝ้าระวัง Endpoint และ Server หลายระบบ</small></div><i aria-hidden="true">→</i></li>
+        <li><span aria-hidden="true">02</span><div><strong>Protect</strong><small>เชื่อมโยง Incident และตอบสนองแบบมีผู้อนุมัติ</small></div><i aria-hidden="true">→</i></li>
+        <li><span aria-hidden="true">03</span><div><strong>Perform</strong><small>ภาพรวมเดียวสำหรับทีม SOC และผู้ดูแลระบบ</small></div><i aria-hidden="true">→</i></li>
+      </ul>
+      <ul class="story-metrics" aria-label="platform status">
+        <li><b>24×7</b><small>AI Monitoring</small></li>
+        <li><b>&lt; 1 min</b><small>Threat Correlation</small></li>
+        <li><b>Human</b><small>Approval Control</small></li>
+      </ul>
     </section>
 
     <section class="login-panel" aria-labelledby="loginTitle">
       <form id="loginForm" class="login-card" novalidate>
+        <div class="card-edge" aria-hidden="true"></div>
+        <div class="access-status"><span><i></i> SECURE ACCESS</span><b>NT-SOC / 01</b></div>
         <img class="login-logo" src="assets/ntshield-wordmark.svg" alt="NT Shield">
         <p class="login-tagline">Secure <i>•</i> Protect <i>•</i> Perform</p>
         <div class="login-heading">
@@ -34,27 +52,27 @@
           <p>เชื่อมต่อกับ NT Shield Central ที่ <code id="centralOrigin"></code></p>
         </div>
 
-        <label class="field">
-          <span>ชื่อผู้ใช้งาน</span>
-          <span class="input-wrap"><b aria-hidden="true">♙</b><input id="username" name="username" autocomplete="username" placeholder="SOC Analyst" value="SOC Analyst"></span>
-        </label>
-        <label class="field">
-          <span>Operator API Key</span>
-          <span class="input-wrap"><b aria-hidden="true">▣</b><input id="apiKey" name="apiKey" type="password" autocomplete="current-password" placeholder="ไม่ต้องกรอกเมื่อปิด RequireAuth"><button id="revealKey" type="button" class="reveal" aria-label="แสดงหรือซ่อน API key">◉</button></span>
-        </label>
+        <div class="field">
+          <label for="username">ชื่อผู้ใช้งาน</label>
+          <span class="input-wrap"><b aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm7 8a7 7 0 0 0-14 0"/></svg></b><input id="username" name="username" type="text" autocomplete="username" placeholder="SOC Analyst" value="SOC Analyst"></span>
+        </div>
+        <div class="field">
+          <label for="apiKey">Operator API Key</label>
+          <span class="input-wrap"><b aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 10V8a5 5 0 0 1 10 0v2m-11 0h12v10H6V10Zm6 4v2"/></svg></b><input id="apiKey" name="apiKey" type="password" autocomplete="current-password" placeholder="ไม่ต้องกรอกเมื่อปิด RequireAuth"><button id="revealKey" type="button" class="reveal" aria-label="แสดงหรือซ่อน API key"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-5 9.5-5 9.5 5 9.5 5-3.5 5-9.5 5-9.5-5-9.5-5Z"/><circle cx="12" cy="12" r="2.5"/></svg></button></span>
+        </div>
 
         <div class="login-options">
           <label><input id="rememberKey" type="checkbox"> จดจำในเบราว์เซอร์นี้</label>
           <button id="forgotKey" type="button" class="link-button">หา Key ได้ที่ไหน?</button>
         </div>
         <p id="loginMessage" class="form-message" role="status" aria-live="polite"></p>
-        <button id="loginButton" class="primary-login" type="submit"><span>LOGIN</span><b aria-hidden="true">→</b></button>
+        <button id="loginButton" class="primary-login" type="submit"><span>ENTER CONTROL CENTER</span><b aria-hidden="true">→</b></button>
         <div class="or"><span>หรือ</span></div>
         <button id="ntAccountButton" class="nt-account" type="button"><span aria-hidden="true">♢</span> Login with NT Account</button>
-        <p class="login-foot">NT Shield Central <span>•</span> Local-first control plane</p>
+        <p class="login-foot"><i></i> TLS ENCRYPTED <span>•</span> NT Shield Central <span>•</span> Local-first</p>
       </form>
     </section>
-  </main>
+  </div>
 
   <div id="dashboardView" class="dashboard-shell" hidden>
     <header class="topbar">

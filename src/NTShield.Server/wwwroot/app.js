@@ -28,6 +28,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#centralOrigin").textContent = location.origin;
   $("#settingsOrigin").value = location.origin;
   bindLogin();
+  bindLoginMotion();
   bindDashboard();
 
   const rememberedName = localStorage.getItem(STORE.username);
@@ -63,6 +64,36 @@ function bindLogin() {
 
   $("#ntAccountButton").addEventListener("click", () => {
     toast("NT Account SSO ยังต้องตั้งค่า OIDC/SAML ใน Central ก่อนใช้งาน");
+  });
+}
+
+function bindLoginMotion() {
+  const shell = $("#loginView");
+  const card = $("#loginForm");
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const finePointer = window.matchMedia("(pointer: fine)").matches;
+  if (!shell || !card || reduceMotion || !finePointer) return;
+
+  let frame = 0;
+  shell.addEventListener("pointermove", event => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      const bounds = shell.getBoundingClientRect();
+      const x = (event.clientX - bounds.left) / bounds.width - .5;
+      const y = (event.clientY - bounds.top) / bounds.height - .5;
+      shell.style.setProperty("--pointer-x", `${(x * 26).toFixed(2)}px`);
+      shell.style.setProperty("--pointer-y", `${(y * 22).toFixed(2)}px`);
+      card.style.setProperty("--tilt-x", `${(-y * 2.3).toFixed(2)}deg`);
+      card.style.setProperty("--tilt-y", `${(x * 3.4).toFixed(2)}deg`);
+      frame = 0;
+    });
+  });
+
+  shell.addEventListener("pointerleave", () => {
+    shell.style.setProperty("--pointer-x", "0px");
+    shell.style.setProperty("--pointer-y", "0px");
+    card.style.setProperty("--tilt-x", "0deg");
+    card.style.setProperty("--tilt-y", "0deg");
   });
 }
 
