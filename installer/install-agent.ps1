@@ -53,8 +53,8 @@ function Set-DirectoryAcl([string]$Path, [string]$Description) {
     $acl = Get-Acl $Path
     $acl.SetAccessRuleProtection($true, $false)
     $rules = @(
-        New-Object System.Security.AccessControl.FileSystemAccessRule("NT AUTHORITY\SYSTEM","FullControl","ContainerInherit,ObjectInherit","None","Allow"),
-        New-Object System.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators","FullControl","ContainerInherit,ObjectInherit","None","Allow")
+        (New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @("NT AUTHORITY\SYSTEM","FullControl","ContainerInherit,ObjectInherit","None","Allow")),
+        (New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @("BUILTIN\Administrators","FullControl","ContainerInherit,ObjectInherit","None","Allow"))
     )
     foreach ($r in $rules) { $acl.AddAccessRule($r) }
     Set-Acl -Path $Path -AclObject $acl

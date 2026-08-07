@@ -99,6 +99,7 @@ builder.Services.AddSingleton<IDetectionEngine, RuleEngine>();
 builder.Services.AddSingleton<FirewallBlocker>();
 builder.Services.AddSingleton<IEvidenceCollector, EvidencePackager>();
 builder.Services.AddSingleton<RuntimePolicyState>();
+builder.Services.AddSingleton<RansomwareFileActivityMonitor>();
 builder.Services.AddSingleton<IResponseExecutor, LocalResponseExecutor>();
 builder.Services.AddSingleton<ITransportClient, HttpsTransportClient>();
 builder.Services.AddSingleton<NTShield.Transport.SyslogForwarder>();

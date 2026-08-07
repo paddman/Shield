@@ -43,6 +43,30 @@ class OpenAICompatibleLlm:
                     f"{self._base_url}/models",
                     headers=self._headers(),
                 )
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    # Some OpenAI-compatible gateways expose chat completions
+                    # but intentionally omit /models. Probe the chat route
+                    # without a prompt so health reflects the route Brain uses.
+                    probe = await client.post(
+                        f"{self._base_url}/chat/completions",
+                        headers=self._headers(),
+                        json={
+                            "model": self._settings.llm_model,
+                            "messages": [],
+                            "stream": False,
+                        },
+                    )
+                    if 400 <= probe.status_code < 500 and probe.status_code not in {
+                        httpx.codes.UNAUTHORIZED,
+                        httpx.codes.FORBIDDEN,
+                        httpx.codes.NOT_FOUND,
+                    }:
+                        return {
+                            "configured": True,
+                            "reachable": True,
+                            "model": self._settings.llm_model,
+                            "models": [self._settings.llm_model],
+                        }
                 response.raise_for_status()
                 payload = response.json()
             return {
@@ -109,7 +133,12 @@ class OpenAICompatibleLlm:
         latency_ms = int((time.perf_counter() - started) * 1000)
         try:
             payload = response.json()
-            content = payload["choices"][0]["message"]["content"]
+            message = payload["choices"][0]["message"]
+            content = message.get("content")
+            if not content:
+                # Qwen-compatible servers may place the answer in the
+                # reasoning field when content is empty.
+                content = message.get("reasoning_content")
             parsed = self._extract_json(content)
             usage = payload.get("usage") or {}
             return LlmResult(
@@ -163,7 +192,12 @@ class OpenAICompatibleLlm:
             start = text.find("{")
             end = text.rfind("}")
             if start < 0 or end <= start:
-                raise
+                # Keep a useful narrative answer when the model ignores the
+                # JSON contract. The deterministic engine still supplies all
+                # safety-critical fields; the narrative is retained in the
+                # final English summary instead of discarding the LLM call.
+                logger.warning("LLM returned narrative instead of JSON; preserving narrative summary")
+                return {"summary_en": text}
             value = json.loads(text[start : end + 1])
             if not isinstance(value, dict):
                 raise ValueError("JSON root must be an object")

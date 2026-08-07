@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Win32;
 using NTShield.Core.Abstractions;
 using NTShield.Core.Compatibility;
 using NTShield.Core.Configuration;
@@ -34,6 +35,7 @@ public sealed class AgentWorker : BackgroundService
     private readonly ITransportClient _transport;
     private readonly NTShield.Transport.SyslogForwarder _syslog;
     private readonly RuntimePolicyState _runtimePolicy;
+    private readonly RansomwareFileActivityMonitor _fileActivityMonitor;
 
     private readonly List<SecurityEventRecord> _eventBuffer = [];
     private readonly List<NetworkConnectionRecord> _connectionBuffer = [];
@@ -70,7 +72,8 @@ public sealed class AgentWorker : BackgroundService
         IResponseExecutor responseExecutor,
         ITransportClient transport,
         NTShield.Transport.SyslogForwarder syslog,
-        RuntimePolicyState runtimePolicy)
+        RuntimePolicyState runtimePolicy,
+        RansomwareFileActivityMonitor fileActivityMonitor)
     {
         _logger = logger;
         _agentOptions = agentOptions.Value;
@@ -91,6 +94,7 @@ public sealed class AgentWorker : BackgroundService
         _transport = transport;
         _syslog = syslog;
         _runtimePolicy = runtimePolicy;
+        _fileActivityMonitor = fileActivityMonitor;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -121,6 +125,8 @@ public sealed class AgentWorker : BackgroundService
 
         await _store.InitializeAsync(stoppingToken);
         await _detectionEngine.InitializeAsync(stoppingToken);
+        ConfigurePowerShellTelemetry();
+        _fileActivityMonitor.Start();
 
         _eventLogCollector.EventReceived += OnEventReceived;
         await _eventLogCollector.StartAsync(stoppingToken);
@@ -167,6 +173,7 @@ public sealed class AgentWorker : BackgroundService
         }
         finally
         {
+            _fileActivityMonitor.Stop();
             _eventLogCollector.EventReceived -= OnEventReceived;
             await _eventLogCollector.StopAsync(CancellationToken.None);
             await WriteStatusFileAsync(stopping: true);
@@ -255,7 +262,9 @@ public sealed class AgentWorker : BackgroundService
             .Take(5000)
             .ToList();
 
-        var alerts = await _detectionEngine.EvaluateAsync(merged, connections, CancellationToken.None);
+        var alerts = (await _detectionEngine.EvaluateAsync(merged, connections, CancellationToken.None))
+            .Concat(_fileActivityMonitor.DrainAlerts())
+            .ToList();
         foreach (var alert in alerts.Where(a => !a.Suppressed))
         {
             await _store.SaveAlertAsync(alert, CancellationToken.None);
@@ -279,6 +288,47 @@ public sealed class AgentWorker : BackgroundService
             {
                 // never break detection loop
             }
+        }
+    }
+
+    private void ConfigurePowerShellTelemetry()
+    {
+        if (!_detectionOptions.EnablePowerShellTelemetry)
+        {
+            return;
+        }
+
+        try
+        {
+            using (var scriptBlock = Registry.LocalMachine.CreateSubKey(
+                       @"SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"))
+            {
+                scriptBlock?.SetValue("EnableScriptBlockLogging", 1, RegistryValueKind.DWord);
+            }
+
+            using (var moduleLogging = Registry.LocalMachine.CreateSubKey(
+                       @"SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"))
+            {
+                moduleLogging?.SetValue("EnableModuleLogging", 1, RegistryValueKind.DWord);
+                using var moduleNames = moduleLogging?.CreateSubKey("ModuleNames");
+                moduleNames?.SetValue("*", "*", RegistryValueKind.String);
+            }
+
+            using (var operational = new System.Diagnostics.Eventing.Reader.EventLogConfiguration(
+                       "Microsoft-Windows-PowerShell/Operational"))
+            {
+                if (!operational.IsEnabled)
+                {
+                    operational.IsEnabled = true;
+                    operational.SaveChanges();
+                }
+            }
+
+            _logger.LogInformation("PowerShell ScriptBlock telemetry enabled");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not enable PowerShell telemetry; existing event log collection remains active");
         }
     }
 
@@ -501,6 +551,17 @@ public sealed class AgentWorker : BackgroundService
     {
         try
         {
+            // An upgraded agent can retain its issued API key while the
+            // enrollment token is intentionally not copied into appsettings.
+            // Heartbeat/ingest are already authenticated, so avoid a noisy
+            // forbidden re-enrollment attempt in that case.
+            if (!string.IsNullOrWhiteSpace(_centralOptions.ApiKey) &&
+                string.IsNullOrWhiteSpace(_centralOptions.EnrollmentToken))
+            {
+                _logger.LogDebug("Skipping re-enrollment; existing Agent API key is loaded");
+                return;
+            }
+
             var req = new AgentRegistrationRequest
             {
                 AgentId = _agentOptions.AgentId,

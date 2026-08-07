@@ -1,10 +1,9 @@
 #Requires -Version 3.0
-# Force-stop Agent service + kill tray/agent so in-place upgrade can overwrite files.
+# Force-stop Agent service and kill tray/agent so in-place upgrade can overwrite files.
 # Called by Setup BEFORE files are copied (PrepareToInstall).
 #
-# IMPORTANT: Only unlock the TARGET install dir (+ service path if it is that dir).
+# IMPORTANT: Only unlock the TARGET install dir and the service path if it is that dir.
 # Never delete Full-stack Agent files when upgrading Agent-only (and vice versa).
-# Previous bug: wiped both trees → service pointed at empty folder → "cannot start service".
 param(
     [string]$ServiceName = "NTShieldAgent",
     [string]$InstallDir = ""
@@ -50,8 +49,7 @@ function Unlock-MainBinaries([string]$Dir) {
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
     }
 
-    # Only move/rename the primary locked executables — do NOT mass-delete every dll
-    # (mass-delete of the OTHER product tree left service path empty).
+    # Only move or rename the primary locked executables; do not mass-delete every DLL.
     $stamp = Get-Date -Format "yyyyMMddHHmmss"
     $mains = @(
         "NTShield.Agent.exe",
@@ -64,7 +62,6 @@ function Unlock-MainBinaries([string]$Dir) {
         if (-not (Test-Path $old)) { continue }
         $bak = "$old.upgrade_old_$stamp"
         try {
-            # Prefer rename (works even when file is mildly locked) over delete
             Move-Item -LiteralPath $old -Destination $bak -Force -ErrorAction Stop
             Write-Host "Renamed $name -> $(Split-Path $bak -Leaf)"
         } catch {
@@ -102,10 +99,10 @@ if (-not $target) {
 if ($target) {
     Unlock-MainBinaries -Dir $target
 } else {
-    Write-Host "No InstallDir — skipped file unlock (service stop + kill only)"
+    Write-Host "No InstallDir - skipped file unlock (service stop + kill only)"
 }
 
-# If service binary path differs from target (stale path), do NOT delete that other tree.
+# If service binary path differs from target, do not delete that other tree.
 # register-agent-service will repoint the service to the new InstallDir after copy.
 try {
     $wmi = Get-WmiObject Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
@@ -114,7 +111,6 @@ try {
         $svcDir = Split-Path -Parent $bin
         if ($svcDir -and $target -and -not $svcDir.Equals($target, [StringComparison]::OrdinalIgnoreCase)) {
             Write-Host "NOTE: service currently points to $svcDir (will be re-registered to $target after copy)"
-            # Only kill procs there; do not delete files
             Get-Process -ErrorAction SilentlyContinue | Where-Object {
                 try { $_.Path -and ($_.Path.StartsWith($svcDir, [StringComparison]::OrdinalIgnoreCase)) }
                 catch { $false }
