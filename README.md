@@ -16,6 +16,7 @@ The safe default is **IDS / detect-only**. IPS containment and remote response r
 - **Multi-platform fleet:** Windows Agent + Tray, Linux Agent, and a lightweight CentOS 6 Go agent.
 - **Cross-host correlation:** joins endpoint events and connections into incidents and lateral-movement campaigns.
 - **NT Shield Brain:** tenant-isolated AI investigation with Qwen-compatible endpoints and human approval guardrails.
+- **LLM Gateway:** Central-issued, expiring Agent tokens with a constrained OpenAI-compatible proxy to the real model server.
 - **WAF/syslog intake:** receives infrastructure and application security signals in the same control plane.
 - **Offline resilience:** local SQLite WAL queue with retry/backoff before telemetry reaches Central.
 
@@ -124,6 +125,34 @@ flowchart TB
 
 > **Important:** Agent never talks to Dashboard. Both talk to **Central**.
 > Remote agents must use Central **IP:7443**, not `localhost`.
+
+### LLM Gateway flow
+
+Agents and AI clients can use Central as their only LLM endpoint. The client sends `Authorization: Bearer <LLM_TOKEN>` to Central; Central validates the expiring token, records usage, and forwards only the allowed inference routes to the configured upstream model server. The upstream key is never returned to clients.
+
+Configure the Central server with an OpenAI-compatible upstream:
+
+```json
+"LLMGateway": {
+  "Enabled": true,
+  "BaseUrl": "https://203.113.71.134:8765/v1",
+  "ApiKey": "<server-side-upstream-key>",
+  "Model": "qwen3.5:9b",
+  "SkipTlsVerify": false,
+  "TimeoutSeconds": 120
+}
+```
+
+For a self-signed upstream certificate, set `SkipTlsVerify` to `true` only for controlled testing; trust the certificate in production.
+
+Open **Control Center → LLM Gateway**, create a token, and configure a client with:
+
+```env
+OPENAI_BASE_URL=https://<CENTRAL>:7443/api/v1/llm/v1
+OPENAI_API_KEY=ntllm_<issued-token>
+```
+
+The proxy allows `models`, `chat/completions`, `completions`, and `embeddings`. Tokens are stored as SHA-256 hashes, shown in plaintext only once, and can be revoked from the page.
 
 ---
 
