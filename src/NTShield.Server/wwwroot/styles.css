@@ -338,6 +338,22 @@ tbody tr:hover { background: #fffcf3; }
 .guardrail-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 30px; }.guardrail-flow span { padding: 10px 12px; background: #fff7d7; border: 1px solid #ffe27b; border-radius: 10px; font-size: 11px; font-weight: 800; }.guardrail-flow b { color: #a66f00; }
 .settings-card { max-width: 720px; display: grid; gap: 15px; }.settings-card h2 { margin: 0; }.settings-card label { display: grid; gap: 7px; font-size: 12px; font-weight: 750; }.settings-card input:not([type="checkbox"]) { height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; }.settings-card p { color: var(--slate); font-size: 11px; line-height: 1.6; }
 .button-primary { border: 0; border-radius: 10px; padding: 11px 16px; background: var(--yellow); font-weight: 850; cursor: pointer; }
+.button-primary:disabled, .button-secondary:disabled, .table-action:disabled { opacity: .55; cursor: wait; }
+.button-secondary { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: #fff; color: var(--gold-dark); font-size: 11px; font-weight: 850; cursor: pointer; }
+.button-secondary:hover { border-color: var(--yellow); background: #fffaf0; }
+.llm-overview-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(280px, .85fr); gap: 14px; margin-bottom: 14px; }
+.llm-route-card, .llm-create-card { display: grid; gap: 15px; }
+.llm-route-card .card-title, .llm-create-card .card-title { margin-bottom: 2px; }
+.route-diagram { display: grid; grid-template-columns: minmax(90px, 1fr) auto minmax(135px, 1.35fr) auto minmax(90px, 1fr); align-items: center; gap: 10px; padding: 18px 0; }
+.route-diagram > b { color: var(--yellow); font-size: 20px; text-align: center; }
+.route-node { min-height: 92px; display: grid; align-content: center; gap: 3px; padding: 11px; border: 1px solid var(--line); border-radius: 13px; background: var(--cloud); }
+.route-node.central { border-color: #ffdf67; background: linear-gradient(145deg, #fff8dc, #fff); box-shadow: 0 8px 20px rgba(190,136,0,.09); }
+.route-node.upstream { background: #f0f6ff; border-color: #cfe0fb; }
+.route-node span { color: var(--gold-dark); font-size: 9px; font-weight: 900; letter-spacing: .08em; }.route-node strong { font-size: 12px; }.route-node small { color: var(--slate); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.llm-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--slate); font-size: 11px; }.llm-facts span { display: grid; gap: 3px; }.llm-facts b { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.llm-create-card label { display: grid; gap: 7px; color: #384152; font-size: 12px; font-weight: 750; }.llm-create-card input { height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; outline: none; }.llm-create-card input:focus { border-color: var(--yellow); box-shadow: 0 0 0 3px rgba(255,196,0,.12); }
+.form-note { margin: 0; color: var(--slate); font-size: 10px; line-height: 1.6; }.llm-token-card .table-toolbar { justify-content: space-between; }.llm-token-card .table-toolbar > div { display: grid; gap: 3px; }.llm-token-card .table-toolbar small { color: var(--slate); font-size: 10px; }.llm-token-card .table-toolbar > span { color: var(--slate); }.token-prefix { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--gold-dark); font-size: 11px; }.table-action { border: 0; background: transparent; color: var(--red); font-size: 11px; font-weight: 850; cursor: pointer; }.table-action:hover { text-decoration: underline; }
+.token-reveal { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 20px; background: rgba(10,15,23,.58); backdrop-filter: blur(8px); }.token-reveal-card { position: relative; width: min(560px, 100%); display: grid; gap: 13px; padding: 28px; border: 1px solid #ffe27b; border-radius: 18px; background: #fff; box-shadow: var(--shadow); }.token-reveal-card .eyebrow { margin: 0; }.token-reveal-card h2 { margin: 0; }.token-reveal-card p:not(.eyebrow) { margin: 0; color: var(--slate); font-size: 12px; }.token-reveal-card code { display: block; overflow: auto; padding: 13px; border-radius: 9px; background: #171c26; color: #ffe27b; font: 11px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; user-select: all; }.token-close { position: absolute; top: 11px; right: 13px; width: 32px; height: 32px; border: 0; border-radius: 9px; background: var(--cloud); color: var(--slate); font-size: 20px; cursor: pointer; }
 .empty-state { min-height: 90px; display: grid; place-items: center; color: var(--slate); font-size: 11px; }
 .toast { position: fixed; z-index: 100; right: 24px; bottom: 24px; max-width: min(380px, calc(100vw - 48px)); padding: 13px 16px; border-radius: 11px; background: var(--ink); color: #fff; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transform: translateY(10px); transition: .22s ease; font-size: 12px; }
 .toast.show { opacity: 1; transform: translateY(0); }
@@ -421,6 +437,9 @@ tbody tr:hover { background: #fffcf3; }
   .analyst-card { grid-template-columns: 1fr; }.analyst-card > button { justify-self: start; }
   .attack-visual { height: 170px; }
   .analyst-layout { grid-template-columns: 1fr; }
+  .llm-overview-grid { grid-template-columns: 1fr; }
+  .route-diagram { gap: 6px; }
+  .route-node { padding: 9px; }
   .table-toolbar { align-items: stretch; flex-direction: column; }.table-toolbar input, .table-toolbar select { width: 100%; }
 }
 
