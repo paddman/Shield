@@ -363,6 +363,11 @@ public sealed class LlmGatewayService
                 upstreamRequest.Content = new StreamContent(http.Request.Body);
                 upstreamRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(
                     string.IsNullOrWhiteSpace(http.Request.ContentType) ? "application/json" : http.Request.ContentType);
+                // StreamContent cannot infer the length from ASP.NET's request
+                // stream, so HttpClient otherwise sends the upstream request
+                // chunked. SOC-Qwen requires a concrete request size.
+                if (http.Request.ContentLength is long contentLength)
+                    upstreamRequest.Content.Headers.ContentLength = contentLength;
             }
 
             using var upstreamResponse = await client.SendAsync(

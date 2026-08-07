@@ -15,6 +15,8 @@ namespace NTShield.Server.Correlation;
 /// </summary>
 public sealed class LateralMovementTracker
 {
+    private const int MaxMlHistoryPerCampaign = 48;
+    private const int MaxSummaryHops = 8;
     private readonly CorrelationOptions _options;
     private readonly ILogger<LateralMovementTracker> _logger;
     private readonly ICentralStore _store;
@@ -47,6 +49,26 @@ public sealed class LateralMovementTracker
                 _campaigns[c.CampaignId] = c;
                 foreach (var ip in c.InvolvedIps)
                     IndexIp(ip, c.CampaignId);
+            }
+
+            // Campaign persistence was added after incidents. Rebuild the in-memory
+            // view once when an older database has incidents but no campaign rows.
+            // This keeps the Threat Campaigns page useful after upgrading without
+            // waiting for a new alert to arrive.
+            if (_campaigns.IsEmpty)
+            {
+                var incidents = await _store.ListIncidentsAsync(500);
+                foreach (var incident in incidents)
+                {
+                    var campaign = MergeIncident(incident);
+                    if (campaign is not null)
+                    {
+                        Persist(campaign);
+                    }
+                }
+
+                LinkPivotChains();
+                _logger.LogInformation("Rebuilt {Count} threat campaigns from persisted incidents", _campaigns.Count);
             }
 
             _logger.LogInformation("Loaded {Count} threat campaigns from durable store", _campaigns.Count);
@@ -121,6 +143,75 @@ public sealed class LateralMovementTracker
     }
 
     public IReadOnlyList<ThreatCatalogEntry> GetThreatCatalog() => ThreatCatalog.All;
+
+    /// <summary>
+    /// Attach the latest anomaly observation to campaigns touching an agent.
+    /// This enriches durable campaign JSON only; it never triggers a response.
+    /// </summary>
+    public int ApplyAnomaly(
+        string agentId,
+        double score,
+        double confidence,
+        int baselineSamples,
+        string model,
+        DateTimeOffset observedAtUtc,
+        IEnumerable<string>? signals = null)
+    {
+        if (string.IsNullOrWhiteSpace(agentId)) return 0;
+
+        var cleanSignals = (signals ?? [])
+            .Where(signal => !string.IsNullOrWhiteSpace(signal))
+            .Select(signal => signal.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(5)
+            .ToList();
+        var updated = 0;
+        lock (_sync)
+        {
+            foreach (var campaign in _campaigns.Values.Where(c => c.Hops.Any(h =>
+                         string.Equals(h.FromAgentId, agentId, StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(h.ToAgentId, agentId, StringComparison.OrdinalIgnoreCase))))
+            {
+                campaign.MlScore = Math.Clamp(score, 0, 1);
+                campaign.MlConfidence = Math.Clamp(confidence, 0, 1);
+                campaign.MlBaselineSamples = Math.Max(0, baselineSamples);
+                campaign.MlModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+                campaign.MlObservedAtUtc = observedAtUtc;
+                campaign.MlSignals = cleanSignals;
+                campaign.MlHistory ??= [];
+                var observation = new ThreatMlObservation
+                {
+                    ObservedAtUtc = observedAtUtc,
+                    Score = campaign.MlScore.Value,
+                    Confidence = campaign.MlConfidence.Value,
+                    BaselineSamples = campaign.MlBaselineSamples.Value,
+                    Model = campaign.MlModel ?? string.Empty,
+                    Signals = [.. cleanSignals]
+                };
+                var existing = campaign.MlHistory.FindIndex(item => item.ObservedAtUtc == observedAtUtc);
+                if (existing >= 0)
+                    campaign.MlHistory[existing] = observation;
+                else
+                    campaign.MlHistory.Add(observation);
+
+                campaign.MlHistory = campaign.MlHistory
+                    .OrderBy(item => item.ObservedAtUtc)
+                    .TakeLast(MaxMlHistoryPerCampaign)
+                    .ToList();
+                Persist(campaign);
+                updated++;
+            }
+        }
+
+        if (updated > 0)
+        {
+            _logger.LogInformation(
+                "ML anomaly attached to {Campaigns} campaign(s) agent={AgentId} score={Score} baseline={Baseline}",
+                updated, agentId, score, baselineSamples);
+        }
+
+        return updated;
+    }
 
     private ThreatCampaign? MergeIncident(Incident incident)
     {
@@ -204,7 +295,14 @@ public sealed class LateralMovementTracker
             IndexIp(toIp, campaign.CampaignId);
         }
 
-        _logger.LogWarning("Threat path updated:\n{Display}", campaign.FormatDisplay());
+        _logger.LogWarning(
+            "Threat path updated campaign={CampaignId} severity={Severity} hops={Hops} hosts={Hosts} ips={Ips} summary={Summary}",
+            campaign.CampaignId,
+            campaign.Severity,
+            campaign.Hops.Count,
+            campaign.InvolvedHosts.Count,
+            campaign.InvolvedIps.Count,
+            campaign.Summary);
         return campaign;
     }
 
@@ -343,8 +441,35 @@ public sealed class LateralMovementTracker
             return "No hops recorded.";
         }
 
-        var path = string.Join(" → ", c.Hops.Select(h => $"{h.FromIp ?? "?"}»{h.ToIp ?? "?"}"));
-        return $"Tracked {c.Hops.Count} hop(s) across {c.InvolvedIps.Count} IP(s). Path: {path}. Categories: {string.Join(", ", c.ThreatCategories)}.";
+        var ordered = c.Hops.OrderBy(h => h.TimestampUtc).ToList();
+        var representative = ordered.Count <= MaxSummaryHops
+            ? ordered
+            : ordered.Take(MaxSummaryHops / 2)
+                .Concat(ordered.TakeLast(MaxSummaryHops / 2))
+                .ToList();
+        var path = string.Join(" → ", representative.Select(h =>
+            $"{BoundSummaryValue(h.FromIp)}»{BoundSummaryValue(h.ToIp)}"));
+        var omitted = ordered.Count - representative.Count;
+        var coverage = omitted > 0
+            ? $"Showing {representative.Count} of {ordered.Count} hops ({omitted} omitted)"
+            : $"Showing all {ordered.Count} hops";
+        var categories = string.Join(", ", c.ThreatCategories
+            .Take(8)
+            .Select(category => BoundSummaryValue(category, 40)));
+        if (c.ThreatCategories.Count > 8)
+        {
+            categories += $", +{c.ThreatCategories.Count - 8} more";
+        }
+
+        return $"Tracked {ordered.Count} hop(s) across {c.InvolvedIps.Count} IP(s). {coverage}: {path}. Categories: {categories}.";
+    }
+
+    private static string BoundSummaryValue(string? value, int maxLength = 64)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value)
+            ? "?"
+            : value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength] + "…";
     }
 
     private static string ShortId(string material)

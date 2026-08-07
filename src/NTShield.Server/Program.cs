@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using NTShield.Server.AI;
 using Microsoft.Extensions.Options;
 using NTShield.Server.Correlation;
 using NTShield.Server.Data;
@@ -47,6 +48,8 @@ builder.Services.Configure<CorrelationOptions>(builder.Configuration.GetSection(
 builder.Services.Configure<SyslogOptions>(builder.Configuration.GetSection(SyslogOptions.SectionName));
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
 builder.Services.Configure<LlmGatewayOptions>(builder.Configuration.GetSection(LlmGatewayOptions.SectionName));
+builder.Services.Configure<AiAnalystOptions>(builder.Configuration.GetSection(AiAnalystOptions.SectionName));
+builder.Services.Configure<AiAnomalyOptions>(builder.Configuration.GetSection(AiAnomalyOptions.SectionName));
 // Bootstrap secrets into options before DI freezes them
 builder.Services.PostConfigure<SecurityOptions>(opts =>
 {
@@ -77,6 +80,8 @@ else
 
 builder.Services.AddSingleton<CrossHostCorrelator>();
 builder.Services.AddSingleton<LateralMovementTracker>();
+builder.Services.AddSingleton<TelemetryFeatureBuilder>();
+builder.Services.AddSingleton<IngestTenantResolver>();
 builder.Services.AddSingleton<IngestService>();
 builder.Services.AddSingleton<ActionService>();
 builder.Services.AddHttpClient("llm-gateway")
@@ -91,7 +96,42 @@ builder.Services.AddHttpClient("llm-gateway")
         };
     });
 builder.Services.AddSingleton<LlmGatewayService>();
+builder.Services.AddHttpClient("ai-analyst")
+    .ConfigurePrimaryHttpMessageHandler(serviceProvider =>
+    {
+        var aiOptions = serviceProvider.GetRequiredService<IOptions<AiAnalystOptions>>().Value;
+        return new HttpClientHandler
+        {
+            // This applies only to the named Brain bridge client. TLS verification
+            // remains enabled by default for every other HTTP client.
+            ServerCertificateCustomValidationCallback = aiOptions.SkipTlsVerify
+                ? HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+                : null
+        };
+    });
+builder.Services.AddSingleton<AiAnalystProxyService>();
+builder.Services.AddHttpClient("ai-anomaly")
+    .ConfigurePrimaryHttpMessageHandler(serviceProvider =>
+    {
+        var aiOptions = serviceProvider.GetRequiredService<IOptions<AiAnomalyOptions>>().Value;
+        return new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = aiOptions.SkipTlsVerify
+                ? HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+                : null
+        };
+    });
+builder.Services.AddSingleton<AiAnomalyProxyService>();
+builder.Services.AddHttpClient("geoip", client =>
+{
+    client.BaseAddress = new Uri("https://ipwho.is/");
+    client.Timeout = TimeSpan.FromSeconds(8);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("NTShield-Central/1.1");
+});
+builder.Services.AddSingleton<GeoIpService>();
 builder.Services.AddSingleton<TopologyService>();
+builder.Services.AddSingleton<TenantManagementService>();
+builder.Services.AddSingleton<TenantReportService>();
 
 // Agent may send gzip-compressed ingest batches (body > ~4KB). Without this, ASP.NET returns 400 BadRequest.
 builder.Services.AddRequestDecompression();
@@ -365,7 +405,7 @@ app.MapMethods("/api/v1/llm/v1/{**path}", new[] { HttpMethods.Get, HttpMethods.P
     HttpContext http,
     LlmGatewayService gateway) => await gateway.ProxyAsync(http, path));
 
-app.MapPost("/api/v1/agents/register", async (AgentRegistrationRequest req, ICentralStore store, IOptions<SecurityOptions> sec, HttpContext http) =>
+app.MapPost("/api/v1/agents/register", async (AgentRegistrationRequest req, ICentralStore store, TenantManagementService tenants, IOptions<SecurityOptions> sec, HttpContext http) =>
 {
     var s = sec.Value;
     var tokenConfigured = !string.IsNullOrWhiteSpace(s.EnrollmentToken);
@@ -383,6 +423,13 @@ app.MapPost("/api/v1/agents/register", async (AgentRegistrationRequest req, ICen
     if (string.IsNullOrWhiteSpace(req.AgentId))
         return Results.BadRequest(new { error = "agent_id_required" });
 
+    if (!string.IsNullOrWhiteSpace(req.TenantId))
+    {
+        req.TenantId = TopologyService.NormalizeTenantId(req.TenantId);
+        if (await tenants.GetAsync(req.TenantId) is null)
+            return Results.BadRequest(new { error = "tenant_not_found" });
+    }
+
     await store.RegisterAgentAsync(req);
     await store.UpdateAgentIntegrityAsync(req.AgentId, req.BinarySha256, req.IsBinarySigned, null);
 
@@ -396,7 +443,7 @@ app.MapPost("/api/v1/agents/register", async (AgentRegistrationRequest req, ICen
 
     var policy = await store.GetActivePolicyAsync(req.AgentId);
     await store.AppendAuditAsync($"agent:{req.AgentId}", "agent.register", req.AgentId, "success",
-        JsonSerializer.Serialize(new { req.ComputerName, req.Platform, req.AgentVersion }),
+        JsonSerializer.Serialize(new { req.ComputerName, req.Platform, req.AgentVersion, tenantId = req.TenantId ?? "existing/default" }),
         http.Connection.RemoteIpAddress?.ToString());
 
     return Results.Ok(new AgentRegistrationResponse
@@ -469,7 +516,7 @@ app.MapPost("/api/v1/heartbeat", async (AgentHeartbeat hb, ICentralStore store) 
     return Results.Ok(new { accepted = true, serverUtc = DateTimeOffset.UtcNow });
 });
 
-app.MapPost("/api/v1/events/batch", async (EventsBatchRequest req, IngestService ingest, HttpRequest http) =>
+app.MapPost("/api/v1/events/batch", async (EventsBatchRequest req, IngestService ingest, IngestTenantResolver tenantResolver, HttpRequest http) =>
 {
     var idem = req.IdempotencyKey ?? http.Headers["Idempotency-Key"].FirstOrDefault();
     var batch = new AgentIngestBatch
@@ -479,10 +526,11 @@ app.MapPost("/api/v1/events/batch", async (EventsBatchRequest req, IngestService
         IdempotencyKey = idem,
         SecurityEvents = req.Events
     };
-    return Results.Ok(await ingest.IngestAsync(batch, CancellationToken.None));
+    var tenantId = await tenantResolver.ResolveAsync(http.HttpContext, batch.AgentId);
+    return Results.Ok(await ingest.IngestAsync(batch, CancellationToken.None, tenantId));
 });
 
-app.MapPost("/api/v1/connections/batch", async (ConnectionsBatchRequest req, IngestService ingest, HttpRequest http) =>
+app.MapPost("/api/v1/connections/batch", async (ConnectionsBatchRequest req, IngestService ingest, IngestTenantResolver tenantResolver, HttpRequest http) =>
 {
     var idem = req.IdempotencyKey ?? http.Headers["Idempotency-Key"].FirstOrDefault();
     var batch = new AgentIngestBatch
@@ -492,10 +540,11 @@ app.MapPost("/api/v1/connections/batch", async (ConnectionsBatchRequest req, Ing
         IdempotencyKey = idem,
         NetworkConnections = req.Connections
     };
-    return Results.Ok(await ingest.IngestAsync(batch, CancellationToken.None));
+    var tenantId = await tenantResolver.ResolveAsync(http.HttpContext, batch.AgentId);
+    return Results.Ok(await ingest.IngestAsync(batch, CancellationToken.None, tenantId));
 });
 
-app.MapPost("/api/v1/ingest", async (AgentIngestBatch? batch, IngestService ingest, HttpRequest http) =>
+app.MapPost("/api/v1/ingest", async (AgentIngestBatch? batch, IngestService ingest, IngestTenantResolver tenantResolver, HttpRequest http) =>
 {
     if (batch is null)
     {
@@ -507,7 +556,8 @@ app.MapPost("/api/v1/ingest", async (AgentIngestBatch? batch, IngestService inge
     }
 
     batch.IdempotencyKey ??= http.Headers["Idempotency-Key"].FirstOrDefault();
-    var result = await ingest.IngestAsync(batch, CancellationToken.None);
+    var tenantId = await tenantResolver.ResolveAsync(http.HttpContext, batch.AgentId);
+    var result = await ingest.IngestAsync(batch, CancellationToken.None, tenantId);
     Log.Information(
         "Ingest accepted={Ok} agent={AgentId} events={E} conn={C} proc={P} alerts={A} incidents={I}",
         result.Accepted,
@@ -518,6 +568,91 @@ app.MapPost("/api/v1/ingest", async (AgentIngestBatch? batch, IngestService inge
         batch.Alerts.Count,
         result.CreatedIncidentIds.Count);
     return Results.Ok(result);
+});
+
+// Customer workspaces, agent ownership and tenant-scoped report generation.
+app.MapGet("/api/v1/tenants", async (TenantManagementService tenants) =>
+    Results.Ok(await tenants.ListAsync()));
+
+app.MapGet("/api/v1/tenants/agents", async (ICentralStore store) => Results.Ok(new
+{
+    agents = await store.ListAgentsAsync(),
+    assignments = await store.ListAgentAssignmentsAsync()
+}));
+
+app.MapGet("/api/v1/tenants/{id}", async (string id, TenantManagementService tenants) =>
+{
+    var tenant = await tenants.GetAsync(id);
+    return tenant is null ? Results.NotFound() : Results.Ok(tenant);
+});
+
+app.MapPost("/api/v1/tenants", async (CustomerTenant? tenant, TenantManagementService tenants, ICentralStore store, HttpContext http) =>
+{
+    if (tenant is null) return Results.BadRequest(new { error = "invalid_customer" });
+    var saved = await tenants.SaveAsync(tenant);
+    await store.AppendAuditAsync(OperatorActor(http), "tenant.upsert", saved.TenantId, "success",
+        JsonSerializer.Serialize(new { saved.Name, saved.Plan, saved.Status }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Created($"/api/v1/tenants/{saved.TenantId}", saved);
+});
+
+app.MapPut("/api/v1/tenants/{id}", async (string id, CustomerTenant? tenant, TenantManagementService tenants, ICentralStore store, HttpContext http) =>
+{
+    if (tenant is null) return Results.BadRequest(new { error = "invalid_customer" });
+    tenant.TenantId = id;
+    if (await tenants.GetAsync(id) is null) return Results.NotFound();
+    var saved = await tenants.SaveAsync(tenant);
+    await store.AppendAuditAsync(OperatorActor(http), "tenant.update", saved.TenantId, "success",
+        JsonSerializer.Serialize(new { saved.Name, saved.Plan, saved.Status }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Ok(saved);
+});
+
+app.MapPut("/api/v1/tenants/{tenantId}/agents/{agentId}", async (
+    string tenantId,
+    string agentId,
+    TenantManagementService tenants,
+    ICentralStore store,
+    HttpContext http) =>
+{
+    await tenants.AssignAgentAsync(tenantId, agentId);
+    await store.AppendAuditAsync(OperatorActor(http), "tenant.agent.assign", agentId, "success",
+        JsonSerializer.Serialize(new { tenantId = TopologyService.NormalizeTenantId(tenantId) }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.NoContent();
+});
+
+app.MapGet("/api/v1/reports", async (TenantReportService reports, HttpContext http, int take = 50) =>
+    Results.Ok(await reports.ListAsync(TopologyService.ResolveTenantId(http), take)));
+
+app.MapPost("/api/v1/reports", async (
+    CreateSecurityReportRequest? request,
+    TenantReportService reports,
+    ICentralStore store,
+    HttpContext http) =>
+{
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var report = await reports.GenerateAsync(tenantId, request ?? new CreateSecurityReportRequest());
+    await store.AppendAuditAsync(OperatorActor(http), "report.generate", report.ReportId, "success",
+        JsonSerializer.Serialize(new { tenantId, report.PeriodStartUtc, report.PeriodEndUtc }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.Created($"/api/v1/reports/{report.ReportId}", report);
+});
+
+app.MapGet("/api/v1/reports/{id}", async (string id, TenantReportService reports, HttpContext http) =>
+{
+    var report = await reports.GetAsync(TopologyService.ResolveTenantId(http), id);
+    return report is null ? Results.NotFound() : Results.Ok(report);
+});
+
+app.MapGet("/api/v1/reports/{id}/download", async (
+    string id,
+    string? format,
+    TenantReportService reports,
+    HttpContext http) =>
+{
+    var report = await reports.GetAsync(TopologyService.ResolveTenantId(http), id);
+    if (report is null) return Results.NotFound();
+    var safeId = report.ReportId[..Math.Min(12, report.ReportId.Length)];
+    return string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase)
+        ? Results.File(System.Text.Encoding.UTF8.GetBytes(TenantReportService.RenderCsv(report)), "text/csv; charset=utf-8", $"ntshield-{report.TenantId}-{safeId}.csv")
+        : Results.File(System.Text.Encoding.UTF8.GetBytes(TenantReportService.RenderHtml(report)), "text/html; charset=utf-8", $"ntshield-{report.TenantId}-{safeId}.html");
 });
 
 // Tenant-scoped infrastructure catalog, Canvas topology and declarative
@@ -650,23 +785,86 @@ app.MapDelete("/api/v1/workflows/{id}", async (string id, TopologyService topolo
     return Results.NoContent();
 });
 
-app.MapPost("/api/v1/incidents", async (Incident incident, ICentralStore store) =>
+app.MapPost("/api/v1/incidents", async (Incident incident, ICentralStore store, LateralMovementTracker tracker) =>
 {
     await store.UpsertIncidentAsync(incident);
+    tracker.IngestIncidents([incident]);
     Log.Warning("Incident upserted:\n{Display}", incident.FormatDisplay());
     return Results.Ok(incident);
 });
 
-app.MapGet("/api/v1/incidents", async (ICentralStore store, int take = 100) =>
+app.MapGet("/api/v1/events", async (ICentralStore store, HttpContext http, int take = 250) =>
 {
-    var incidents = await store.ListIncidentsAsync(Math.Clamp(take, 1, 500));
+    var events = await store.ListSecurityEventsAsync(
+        Math.Clamp(take, 1, 500),
+        TopologyService.ResolveTenantId(http));
+    return Results.Ok(events);
+});
+
+app.MapGet("/api/v1/incidents", async (ICentralStore store, HttpContext http, int take = 100) =>
+{
+    var incidents = await store.ListIncidentsAsync(
+        Math.Clamp(take, 1, 500),
+        TopologyService.ResolveTenantId(http));
     return Results.Ok(incidents);
 });
 
-app.MapGet("/api/v1/incidents/{id}", async (string id, ICentralStore store) =>
+app.MapGet("/api/v1/incidents/count", async (ICentralStore store, HttpContext http) =>
 {
-    var incident = await store.GetIncidentAsync(id);
+    var total = await store.CountIncidentsAsync(TopologyService.ResolveTenantId(http));
+    return Results.Ok(new { total });
+});
+
+app.MapGet("/api/v1/incidents/{id}", async (string id, ICentralStore store, HttpContext http) =>
+{
+    var incident = await store.GetIncidentAsync(id, TopologyService.ResolveTenantId(http));
     return incident is null ? Results.NotFound() : Results.Ok(incident);
+});
+
+app.MapPost("/api/v1/geoip/lookup", async (
+    GeoIpLookupRequest request,
+    GeoIpService geoIp,
+    HttpContext http) =>
+{
+    var locations = await geoIp.LookupAsync(request.Ips, http.RequestAborted);
+    return Results.Ok(locations);
+});
+
+app.MapPost("/api/v1/incidents/{id}/ai/analyze", async (
+    string id,
+    ICentralStore store,
+    AiAnalystProxyService analyst,
+    HttpContext http) =>
+{
+    if (await store.GetIncidentAsync(id, TopologyService.ResolveTenantId(http)) is null)
+        return Results.NotFound(new { error = "incident_not_found" });
+
+    // The browser's tenant header is not forwarded to Brain. Until Central RBAC
+    // supplies a signed tenant claim, the mapping stays server-side in config.
+    var tenantId = analyst.TenantId;
+    try
+    {
+        var json = await analyst.AnalyzeIncidentAsync(id, tenantId, http.RequestAborted);
+        await store.AppendAuditAsync(
+            OperatorActor(http),
+            "ai.incident.analyze",
+            id,
+            "success",
+            JsonSerializer.Serialize(new { tenantId, source = "ntshield-brain" }),
+            http.Connection.RemoteIpAddress?.ToString());
+        return Results.Content(json, "application/json", System.Text.Encoding.UTF8);
+    }
+    catch (AiAnalystProxyException ex)
+    {
+        await store.AppendAuditAsync(
+            OperatorActor(http),
+            "ai.incident.analyze",
+            id,
+            "fail",
+            JsonSerializer.Serialize(new { tenantId, error = ex.Error }),
+            http.Connection.RemoteIpAddress?.ToString());
+        return Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode);
+    }
 });
 
 app.MapPost("/api/v1/actions", async (ResponseActionRequest request, ActionService actions, ICentralStore store, HttpContext http) =>
@@ -734,33 +932,40 @@ app.MapGet("/api/v1/actions/{id}", async (string id, ActionService actions) =>
     return action is null ? Results.NotFound() : Results.Ok(action);
 });
 
-app.MapGet("/api/v1/agents", async (ICentralStore store) => Results.Ok(await store.ListAgentsAsync()));
+app.MapGet("/api/v1/agents", async (ICentralStore store, HttpContext http) =>
+    Results.Ok(await store.ListAgentsAsync(TopologyService.ResolveTenantId(http))));
 
-app.MapGet("/api/v1/agents/{agentId}", async (string agentId, ICentralStore store, int metrics = 60) =>
+app.MapGet("/api/v1/agents/{agentId}", async (string agentId, ICentralStore store, HttpContext http, int metrics = 60) =>
 {
-    var item = await store.GetAgentAsync(agentId, Math.Clamp(metrics, 1, 500));
+    var item = await store.GetAgentAsync(agentId, Math.Clamp(metrics, 1, 500), TopologyService.ResolveTenantId(http));
     return item is null ? Results.NotFound() : Results.Ok(item);
 });
 
-app.MapGet("/api/v1/agents/{agentId}/metrics", async (string agentId, ICentralStore store, int take = 60) =>
-    Results.Ok(await store.ListAgentMetricsAsync(agentId, Math.Clamp(take, 1, 500))));
+app.MapGet("/api/v1/agents/{agentId}/metrics", async (string agentId, ICentralStore store, HttpContext http, int take = 60) =>
+{
+    var tenantId = TopologyService.ResolveTenantId(http);
+    if (await store.GetAgentAsync(agentId, 1, tenantId) is null) return Results.NotFound();
+    return Results.Ok(await store.ListAgentMetricsAsync(agentId, Math.Clamp(take, 1, 500)));
+});
 
 // Threat catalog + multi-host lateral tracking (detect/track only)
 app.MapGet("/api/v1/threats/catalog", (LateralMovementTracker tracker) =>
     Results.Ok(tracker.GetThreatCatalog()));
 
-app.MapGet("/api/v1/threats", (LateralMovementTracker tracker, int take = 100) =>
-    Results.Ok(tracker.ListCampaigns(take)));
+app.MapGet("/api/v1/threats", async (LateralMovementTracker tracker, ICentralStore store, HttpContext http, int take = 100) =>
+    Results.Ok(await ListTenantCampaignsAsync(store, tracker, TopologyService.ResolveTenantId(http), take)));
 
-app.MapGet("/api/v1/threats/{id}", (string id, LateralMovementTracker tracker) =>
+app.MapGet("/api/v1/threats/{id}", async (string id, LateralMovementTracker tracker, ICentralStore store, HttpContext http) =>
 {
-    var c = tracker.GetCampaign(id);
+    var c = (await ListTenantCampaignsAsync(store, tracker, TopologyService.ResolveTenantId(http), 500))
+        .FirstOrDefault(item => string.Equals(item.CampaignId, id, StringComparison.OrdinalIgnoreCase));
     return c is null ? Results.NotFound() : Results.Ok(c);
 });
 
-app.MapGet("/api/v1/threats/{id}/path", (string id, LateralMovementTracker tracker) =>
+app.MapGet("/api/v1/threats/{id}/path", async (string id, LateralMovementTracker tracker, ICentralStore store, HttpContext http) =>
 {
-    var c = tracker.GetCampaign(id);
+    var c = (await ListTenantCampaignsAsync(store, tracker, TopologyService.ResolveTenantId(http), 500))
+        .FirstOrDefault(item => string.Equals(item.CampaignId, id, StringComparison.OrdinalIgnoreCase));
     if (c is null)
     {
         return Results.NotFound();
@@ -778,8 +983,13 @@ app.MapGet("/api/v1/threats/{id}/path", (string id, LateralMovementTracker track
     });
 });
 
-app.MapGet("/api/v1/threats/by-host/{hostOrIp}", (string hostOrIp, LateralMovementTracker tracker) =>
-    Results.Ok(tracker.FindByHostOrIp(hostOrIp)));
+app.MapGet("/api/v1/threats/by-host/{hostOrIp}", async (string hostOrIp, LateralMovementTracker tracker, ICentralStore store, HttpContext http) =>
+{
+    var campaigns = await ListTenantCampaignsAsync(store, tracker, TopologyService.ResolveTenantId(http), 500);
+    return Results.Ok(campaigns.Where(campaign =>
+        campaign.InvolvedIps.Any(ip => string.Equals(ip, hostOrIp, StringComparison.OrdinalIgnoreCase)) ||
+        campaign.InvolvedHosts.Any(host => string.Equals(host, hostOrIp, StringComparison.OrdinalIgnoreCase))));
+});
 
 Log.Information("NT Shield Server starting");
 app.Run();
@@ -797,6 +1007,29 @@ static string OperatorActor(HttpContext http)
     return http.Items.TryGetValue(ApiKeyAuthMiddleware.PrincipalItem, out var principal)
         ? principal?.ToString() ?? "anonymous"
         : "anonymous";
+}
+
+static async Task<IReadOnlyList<ThreatCampaign>> ListTenantCampaignsAsync(
+    ICentralStore store,
+    LateralMovementTracker tracker,
+    string tenantId,
+    int take)
+{
+    var agents = await store.ListAgentsAsync(tenantId);
+    var agentIds = agents.OfType<AgentInventoryItem>()
+        .Select(agent => agent.AgentId)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var incidents = await store.ListIncidentsAsync(500, tenantId);
+    var incidentIds = incidents.Select(item => item.IncidentId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    return tracker.ListCampaigns(500)
+        .Where(campaign =>
+            campaign.RelatedIncidentIds.Any(incidentIds.Contains) ||
+            campaign.Hops.Any(hop =>
+                (!string.IsNullOrWhiteSpace(hop.FromAgentId) && agentIds.Contains(hop.FromAgentId)) ||
+                (!string.IsNullOrWhiteSpace(hop.ToAgentId) && agentIds.Contains(hop.ToAgentId))))
+        .OrderByDescending(campaign => campaign.LastSeenUtc)
+        .Take(Math.Clamp(take, 1, 500))
+        .ToList();
 }
 
 /// <summary>

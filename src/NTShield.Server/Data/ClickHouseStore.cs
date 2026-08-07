@@ -106,11 +106,37 @@ public sealed class ClickHouseStore : ICentralStore
         await WriteAsync("incident", incident.IncidentId, incident.LastSeenUtc, incident.SourceAgentId ?? "", incident);
     }
 
-    public Task<IReadOnlyList<Incident>> ListIncidentsAsync(int take) => _control.ListIncidentsAsync(take);
+    public Task<IReadOnlyList<SecurityEventRecord>> ListSecurityEventsAsync(
+        int take,
+        string? tenantId = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null) =>
+        _control.ListSecurityEventsAsync(take, tenantId, fromUtc, toUtc);
 
-    public Task<Incident?> GetIncidentAsync(string id) => _control.GetIncidentAsync(id);
+    public Task<IReadOnlyList<Incident>> ListIncidentsAsync(
+        int take,
+        string? tenantId = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null) =>
+        _control.ListIncidentsAsync(take, tenantId, fromUtc, toUtc);
 
-    public Task<IReadOnlyList<object>> ListAgentsAsync() => _control.ListAgentsAsync();
+    public Task<long> CountIncidentsAsync(
+        string? tenantId = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null) =>
+        _control.CountIncidentsAsync(tenantId, fromUtc, toUtc);
+
+    public Task<TenantReportAggregate> GetReportAggregateAsync(
+        string tenantId,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc) =>
+        _control.GetReportAggregateAsync(tenantId, fromUtc, toUtc);
+
+    public Task<Incident?> GetIncidentAsync(string id, string? tenantId = null) =>
+        _control.GetIncidentAsync(id, tenantId);
+
+    public Task<IReadOnlyList<object>> ListAgentsAsync(string? tenantId = null) =>
+        _control.ListAgentsAsync(tenantId);
 
     public Task<IReadOnlyList<NetworkConnectionRecord>> FindOutboundAsync(
         string remoteIp, int? remotePort, DateTimeOffset from, DateTimeOffset to) =>
@@ -172,11 +198,31 @@ public sealed class ClickHouseStore : ICentralStore
         await WriteAsync("agent_metric", hb.AgentId, hb.TimestampUtc, hb.AgentId, hb);
     }
 
-    public Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60) =>
-        _control.GetAgentAsync(agentId, metricsTake);
+    public Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60, string? tenantId = null) =>
+        _control.GetAgentAsync(agentId, metricsTake, tenantId);
 
     public Task<IReadOnlyList<AgentMetricsSample>> ListAgentMetricsAsync(string agentId, int take = 60) =>
         _control.ListAgentMetricsAsync(agentId, take);
+
+    public Task<IReadOnlyList<CustomerTenant>> ListTenantsAsync() => _control.ListTenantsAsync();
+
+    public Task<CustomerTenant?> GetTenantAsync(string tenantId) => _control.GetTenantAsync(tenantId);
+
+    public Task UpsertTenantAsync(CustomerTenant tenant) => _control.UpsertTenantAsync(tenant);
+
+    public Task<IReadOnlyList<TenantAgentAssignment>> ListAgentAssignmentsAsync() =>
+        _control.ListAgentAssignmentsAsync();
+
+    public Task AssignAgentToTenantAsync(string tenantId, string agentId) =>
+        _control.AssignAgentToTenantAsync(tenantId, agentId);
+
+    public Task<IReadOnlyList<SecurityReportRecord>> ListReportsAsync(string tenantId, int take) =>
+        _control.ListReportsAsync(tenantId, take);
+
+    public Task<SecurityReportRecord?> GetReportAsync(string tenantId, string reportId) =>
+        _control.GetReportAsync(tenantId, reportId);
+
+    public Task UpsertReportAsync(SecurityReportRecord report) => _control.UpsertReportAsync(report);
 
     // Topology, asset and workflow graphs are transactional control-plane data;
     // keep them in the SQLite control store when ClickHouse is enabled.

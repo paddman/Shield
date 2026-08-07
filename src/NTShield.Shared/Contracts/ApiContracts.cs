@@ -5,6 +5,8 @@ namespace NTShield.Shared.Contracts;
 public sealed class AgentRegistrationRequest
 {
     public string AgentId { get; set; } = string.Empty;
+    /// <summary>Customer workspace assigned during enrollment. Existing agents default to "default".</summary>
+    public string? TenantId { get; set; }
     public string ComputerName { get; set; } = string.Empty;
     public string AgentVersion { get; set; } = string.Empty;
     public string OsVersion { get; set; } = string.Empty;
@@ -170,6 +172,11 @@ public sealed class IngestResponse
     public int ReceivedCount { get; set; }
     public List<string> CreatedIncidentIds { get; set; } = [];
     public bool Duplicate { get; set; }
+    public string? AnomalyState { get; set; }
+    public double? AnomalyScore { get; set; }
+    public double? AnomalyConfidence { get; set; }
+    public int? AnomalyBaselineSamples { get; set; }
+    public string? AnomalyModel { get; set; }
 }
 
 public sealed class EventsBatchRequest

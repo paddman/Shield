@@ -36,7 +36,7 @@ def _state_path() -> Path:
     return Path(
         os.getenv(
             "NTSHIELD_POLLER_STATE_PATH",
-            "/home/adminmc/Shield/ai-service/data/central-poller-state.json",
+            "/var/lib/ntshield/ai/central-poller-state.json",
         )
     )
 

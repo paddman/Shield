@@ -44,3 +44,27 @@ def test_isolation_forest_flags_large_behavior_change(settings, store):
     assert outlier.state == "ready"
     assert outlier.score >= 0.8
     assert outlier.contributors
+
+
+def test_constant_baseline_does_not_flag_identical_observation(settings, store):
+    engine = HybridAnomalyEngine(store, settings)
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    features = {
+        "connections_per_minute": 100,
+        "unique_destination_ports": 4,
+        "failed_login_rate": 0,
+    }
+
+    for index in range(settings.anomaly_min_samples + 2):
+        result = engine.score(
+            "tenant-a",
+            AnomalyObservationRequest(
+                asset_id="stable-01",
+                features=features,
+                learn=True,
+                timestamp_utc=base + timedelta(minutes=index),
+            ),
+        )
+
+    assert result.state == "ready"
+    assert result.score == 0.0

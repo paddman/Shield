@@ -8,9 +8,11 @@
   <title>NT Shield Control Center</title>
   <link rel="icon" type="image/svg+xml" href="assets/ntshield-app-icon.svg">
   <link rel="stylesheet" href="assets/fonts/fonts.css">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=20260807-ai-investigator-1">
   <link rel="stylesheet" href="topology.css">
-  <link rel="stylesheet" href="defense-map.css">
+  <link rel="stylesheet" href="defense-map.css?v=20260807-moving-ip-labels">
+  <link rel="stylesheet" href="tenant-report.css?v=20260807-tenant-report">
+  <link rel="stylesheet" href="threat-campaign.css?v=20260807-threat-timeline-1">
 </head>
 <body>
   <div id="loginView" class="login-shell">
@@ -85,10 +87,13 @@
         <button data-nav="threats">Threats</button>
         <button data-nav="assets">Assets</button>
         <button data-nav="topology">Topology</button>
+        <button data-nav="customers">Customers</button>
+        <button data-nav="reports">Reports</button>
         <button data-nav="analyst">AI Analyst</button>
         <button data-nav="llm">LLM Gateway</button>
       </nav>
       <div class="operator">
+        <label class="tenant-switcher"><span>Customer</span><select id="globalTenantSelect"><option value="default">Default customer</option></select></label>
         <span id="connectionDot" class="live-dot"></span>
         <div><small>Welcome,</small><strong id="operatorName">SOC Analyst</strong></div>
         <button id="refreshButton" class="icon-button" aria-label="รีเฟรชข้อมูล">↻</button>
@@ -103,6 +108,8 @@
         <button data-nav="threats"><span>⌁</span> Threats</button>
         <button data-nav="assets"><span>▣</span> Assets</button>
         <button data-nav="topology"><span>⌘</span> Topology</button>
+        <button data-nav="customers"><span>◫</span> Customers</button>
+        <button data-nav="reports"><span>▤</span> Reports</button>
         <button data-nav="analyst"><span>AI</span> AI Analyst</button>
         <button data-nav="llm"><span>↔</span> LLM Gateway</button>
         <button data-nav="settings"><span>⚙</span> Settings</button>
@@ -145,11 +152,16 @@
           </article>
 
           <div class="defense-globe-wrap" aria-label="Animated global threat and defense map">
+            <div class="defense-map-heading">
+              <span><i></i> LIVE INCIDENT MAP</span>
+              <small>Resolving attack-source countries…</small>
+            </div>
+            <div id="defenseIncidentPins" aria-label="GeoIP-positioned attack source IP addresses"></div>
             <canvas id="defenseGlobeCanvas"></canvas>
-            <div class="defense-core" aria-hidden="true"><span></span><img src="assets/ntshield-app-icon.svg" alt=""><i></i></div>
             <div class="defense-agent agent-one"><i>AI</i><span><b>AI DEFENSE AGENT</b><small>Monitoring</small></span></div>
             <div class="defense-agent agent-two"><i>AI</i><span><b>AI DEFENSE AGENT</b><small>Correlating</small></span></div>
             <div class="defense-agent agent-three"><i>AI</i><span><b>AI DEFENSE AGENT</b><small>Protected</small></span></div>
+            <small class="defense-geo-attribution">Natural Earth countries • GeoIP locations are approximate</small>
           </div>
 
           <article class="defense-panel defense-network-panel">
@@ -163,7 +175,7 @@
             </ul>
           </article>
 
-          <article class="defense-panel threat-map-panel">
+          <article class="defense-panel threat-map-panel dashboard-link-panel" data-dashboard-link="threats" tabindex="0" role="button" aria-label="เปิดหน้า Threats">
             <div class="defense-panel-title"><h2>THREAT MAP OVERVIEW</h2><span class="muted">• REAL-TIME</span></div>
             <div id="defenseMiniMap" class="defense-mini-map" aria-label="Threat distribution overview">
               <svg viewBox="0 0 360 155" aria-hidden="true"><path d="M13 55 35 36l42 2 18 17-9 17-23 4-9 25-19-8-8-22-16-5Zm78 64 20 10 10 19-9 30-13 16-8-25 5-25Zm66-73 21-13 31 3 12 12-9 12-22-4-13 15-17-8Zm35 26 23-2 19 17-4 34-18 31-18-22-9-35Zm47-25 41-11 44 7 24 24-18 9-28-7-15 14-26-4-18-18Zm70 52 18 4 12 16-17 11-19-8Z"/></svg>
@@ -172,8 +184,8 @@
             <div class="map-legend"><span><i class="critical"></i>High Risk</span><span><i class="medium"></i>Medium</span><span><i class="low"></i>Low</span><span><i></i>Monitored</span></div>
           </article>
 
-          <article class="defense-panel defense-status-panel">
-            <div class="defense-panel-title"><h2>AI DEFENSE STATUS <span>• PROTECTED</span></h2><small id="defenseLastUpdated">Waiting for telemetry</small></div>
+          <article class="defense-panel defense-status-panel dashboard-link-panel" data-dashboard-link="incidents" tabindex="0" role="button" aria-label="เปิดหน้า Incidents">
+            <div class="defense-panel-title"><h2>AI DEFENSE STATUS <span id="defenseStatusLabel">• PROTECTED</span></h2><small id="defenseLastUpdated">Waiting for telemetry</small></div>
             <div class="defense-status-grid">
               <span><i>✓</i><b>Network</b><small id="statusNetwork">Secure</small></span>
               <span><i>✓</i><b>Endpoints</b><small id="statusEndpoints">Secure</small></span>
@@ -183,22 +195,62 @@
             </div>
           </article>
 
-          <article class="defense-panel defense-impact-panel">
+          <article class="defense-panel defense-impact-panel dashboard-link-panel" data-dashboard-link="reports" tabindex="0" role="button" aria-label="เปิดหน้า Reports">
             <div class="defense-panel-title"><h2>DEFENSE IMPACT</h2><span><i></i> LIVE</span></div>
             <svg id="defenseImpactChart" viewBox="0 0 300 125" preserveAspectRatio="none" aria-label="Seven day defense impact"><defs><linearGradient id="defenseImpactFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffc400" stop-opacity=".28"/><stop offset="1" stop-color="#ffc400" stop-opacity="0"/></linearGradient></defs><path id="defenseImpactArea" d="M0 115 L300 115 Z"/><polyline id="defenseImpactLine" points="0,115 300,115"/><g id="defenseImpactDots"></g></svg>
-            <div class="defense-impact-score"><b id="defenseNeutralized">100%</b><span>Threats Assessed<br>Last 7 Days</span></div>
+            <div class="defense-impact-score"><b id="defenseNeutralized">100%</b><span>Current Defense<br>Score</span></div>
           </article>
         </div>
       </section>
 
       <section class="page" data-page="incidents" aria-labelledby="incidentsTitle">
         <div class="page-heading"><div><p class="eyebrow">INVESTIGATE</p><h1 id="incidentsTitle">Incidents</h1><p>เหตุการณ์ที่ Central เชื่อมโยงจากหลาย Agent</p></div><span id="incidentPageCount" class="count-pill">0 incidents</span></div>
-        <article class="card table-card"><div class="table-toolbar"><input id="incidentSearch" type="search" placeholder="ค้นหา Incident, host, IP หรือ user"><select id="severityFilter"><option value="">ทุกระดับ</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></div><div class="table-scroll"><table><thead><tr><th>Severity</th><th>Incident</th><th>Source</th><th>Destination</th><th>Time</th></tr></thead><tbody id="incidentTable"></tbody></table></div></article>
+        <article class="card table-card"><div class="table-toolbar"><input id="incidentSearch" type="search" placeholder="ค้นหา Incident, host, IP หรือ user"><select id="severityFilter"><option value="">ทุกระดับ</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></div><div class="table-scroll"><table><thead><tr><th>Severity</th><th>Incident</th><th>Source IP / Host</th><th>Destination IP / Host</th><th>Time</th></tr></thead><tbody id="incidentTable"></tbody></table></div></article>
       </section>
 
       <section class="page" data-page="threats" aria-labelledby="threatsTitle">
-        <div class="page-heading"><div><p class="eyebrow">CORRELATE</p><h1 id="threatsTitle">Threat Campaigns</h1><p>เส้นทางและรูปแบบการโจมตีข้ามเครื่อง</p></div><span id="threatPageCount" class="count-pill">0 threats</span></div>
-        <div id="threatCards" class="collection-grid empty-state">ยังไม่มี Threat Campaign</div>
+        <div class="page-heading threat-campaign-heading">
+          <div><p class="eyebrow">CORRELATE</p><h1 id="threatsTitle">Threat Campaigns</h1><p>เส้นทางและรูปแบบการโจมตีข้ามเครื่อง</p></div>
+          <div class="threat-heading-actions">
+            <label class="compact-field"><span>Tenant</span><span id="threatTenantName" class="threat-tenant-name">Default customer</span></label>
+            <label class="compact-field"><span>Window</span><select id="threatTimeWindow"><option value="24">Last 24 hours</option><option value="72">Last 3 days</option><option value="168">Last 7 days</option></select></label>
+            <button id="threatRefresh" class="button-secondary" type="button"><span aria-hidden="true">↻</span> Refresh</button>
+            <span id="threatPageCount" class="count-pill">0 threats</span>
+          </div>
+        </div>
+
+        <div class="threat-campaign-layout">
+          <aside class="card threat-campaign-rail" aria-label="Threat campaign list">
+            <div class="threat-rail-header"><div><span class="section-kicker">CAMPAIGNS</span><h2>Active correlation</h2></div><span id="threatActiveCount" class="threat-active-dot"><i></i> Live</span></div>
+            <div class="threat-rail-tools"><label class="sr-only" for="threatFilter">Filter campaigns</label><select id="threatFilter"><option value="">All campaigns</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select><label class="sr-only" for="threatSort">Sort campaigns</label><select id="threatSort"><option value="recent">Last seen</option><option value="risk">Risk score</option></select></div>
+            <div id="threatCampaignList" class="threat-campaign-list"></div>
+            <div class="threat-rail-footer"><span id="threatRailSummary">0 campaigns</span><span>Central correlation</span></div>
+          </aside>
+
+          <section class="card threat-path-panel" aria-labelledby="threatPathTitle">
+            <div class="threat-path-header"><div><div class="threat-path-label"><span class="live-dot"></span> SELECTED CAMPAIGN</div><h2 id="threatPathTitle">Select a campaign</h2><p id="threatPathMeta">เลือก Campaign เพื่อดูเส้นทางโจมตีที่ Central เชื่อมโยงได้</p></div><div class="threat-path-actions"><span id="threatPathStatus" class="threat-status-chip">Waiting</span><button id="threatFitPath" class="icon-button" type="button" aria-label="Fit attack path">⌗</button></div></div>
+            <div id="threatGraphViewport" class="threat-graph-viewport">
+              <div class="threat-graph-toolbar"><span><i class="graph-legend-dot observed"></i> Observed</span><span><i class="graph-legend-line inferred"></i> Inferred</span><span id="threatEvidenceSummary"><i class="graph-legend-dot evidence"></i> Evidence 0</span></div>
+              <div id="threatGraphEmpty" class="threat-graph-empty" hidden><div class="threat-empty-mark">⌁</div><h3>ยังไม่มีเส้นทางที่เชื่อมโยงได้</h3><p>เมื่อ Central พบความสัมพันธ์ข้าม Host จะแสดง Attack Path และหลักฐานในพื้นที่นี้</p></div>
+              <div id="threatGraphStage" class="threat-graph-stage" hidden>
+                <svg id="threatGraphLines" class="threat-graph-lines" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="threatArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ad7b00"></path></marker></defs><g id="threatGraphLineGroup"></g></svg>
+                <div id="threatGraphNodes" class="threat-graph-nodes"></div>
+              </div>
+            </div>
+            <div id="threatCampaignSummary" class="threat-campaign-summary" hidden></div>
+          </section>
+
+          <aside class="card threat-inspector" aria-label="Campaign inspector">
+            <div class="threat-inspector-header"><div><span class="section-kicker">CAMPAIGN FACTS</span><h2>Investigation context</h2></div><span id="threatInspectorRisk" class="severity-badge high">—</span></div>
+            <div id="threatInspectorBody" class="threat-inspector-body"><div class="threat-inspector-empty">เลือก Campaign เพื่อดู Context, IP, Host และ User ที่เกี่ยวข้อง</div></div>
+          </aside>
+        </div>
+
+        <section class="card threat-timeline-panel" aria-labelledby="threatTimelineTitle">
+          <div class="threat-timeline-header"><div><span class="section-kicker">CORRELATION TIMELINE</span><h2 id="threatTimelineTitle">Campaign timeline</h2></div><span id="threatTimelineWindow">UTC window —</span></div>
+          <div id="threatTimelineExplain" class="threat-timeline-explainer" hidden></div>
+          <div id="threatTimeline" class="threat-timeline"><div class="threat-timeline-empty">เลือก Campaign เพื่อดู event sequence</div></div>
+        </section>
       </section>
 
       <section class="page" data-page="assets" aria-labelledby="assetsTitle">
@@ -210,7 +262,7 @@
         <div class="page-heading topology-heading">
           <div><p class="eyebrow">MAP &amp; AUTOMATE</p><h1 id="topologyTitle">Infrastructure Canvas</h1><p>วางระบบลูกค้าเป็นภาพเดียว แล้วผูก telemetry กับ detection workflow</p></div>
           <div class="topology-heading-actions">
-            <label class="compact-field"><span>Tenant</span><input id="topologyTenant" value="default" maxlength="128" spellcheck="false"></label>
+            <label class="compact-field"><span>Tenant</span><select id="topologyTenant"><option value="default">Default customer</option></select></label>
             <label class="compact-field"><span>Map name</span><input id="topologyName" value="Infrastructure map" maxlength="200"></label>
             <label class="compact-field"><span>Map</span><select id="topologySelect"><option value="">กำลังโหลด…</option></select></label>
             <button id="newTopology" class="button-secondary" type="button">+ New map</button>
@@ -281,9 +333,122 @@
         </div>
       </section>
 
+      <section class="page" data-page="customers" aria-labelledby="customersTitle">
+        <div class="page-heading customer-page-heading">
+          <div><p class="eyebrow">MULTI-TENANT CONTROL</p><h1 id="customersTitle">Customer Workspaces</h1><p>แยก Agent, Telemetry, Incident, Topology และ Report ตามลูกค้า</p></div>
+          <div class="heading-actions"><span id="customerPageCount" class="count-pill">0 customers</span><button id="newCustomerButton" class="button-primary" type="button">+ เพิ่มลูกค้า</button></div>
+        </div>
+        <div class="customer-workbench">
+          <article class="card customer-list-card">
+            <div class="table-toolbar"><input id="customerSearch" type="search" placeholder="ค้นหาชื่อลูกค้า, tenant, plan"><span id="customerListState">กำลังโหลด…</span></div>
+            <div class="table-scroll"><table><thead><tr><th>Customer</th><th>Tenant ID</th><th>Plan</th><th>Status</th><th>Agents</th><th>Updated</th></tr></thead><tbody id="customerTable"></tbody></table></div>
+          </article>
+          <aside class="customer-side-stack">
+            <form id="customerForm" class="card customer-form">
+              <div class="card-title"><h2 id="customerFormTitle">เพิ่มลูกค้า</h2><span>Customer registry</span></div>
+              <label>Tenant ID<input id="customerTenantId" maxlength="128" placeholder="acme-th" required></label>
+              <label>Display name<input id="customerName" maxlength="200" placeholder="ACME Thailand" required></label>
+              <label>Legal name<input id="customerLegalName" maxlength="240"></label>
+              <div class="customer-form-grid"><label>Plan<select id="customerPlan"><option value="trial">Trial</option><option value="standard" selected>Standard</option><option value="enterprise">Enterprise</option><option value="managed">Managed SOC</option></select></label><label>Status<select id="customerStatus"><option value="onboarding">Onboarding</option><option value="active" selected>Active</option><option value="suspended">Suspended</option></select></label></div>
+              <div class="customer-form-grid"><label>Contact<input id="customerContactName" maxlength="160"></label><label>Email<input id="customerContactEmail" type="email" maxlength="254"></label></div>
+              <label>Notes<textarea id="customerNotes" rows="3" maxlength="4000"></textarea></label>
+              <button class="button-primary" type="submit">บันทึกลูกค้า</button>
+            </form>
+            <article class="card customer-agent-card">
+              <div class="card-title"><h2>Agent ownership</h2><span id="customerAgentState">เลือกลูกค้าก่อน</span></div>
+              <p>ย้าย Agent เข้าลูกค้าที่เลือก ข้อมูลย้อนหลังของ Agent จะถูกมองผ่าน Tenant นี้</p>
+              <div id="customerAgentList" class="customer-agent-list"></div>
+            </article>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page" data-page="reports" aria-labelledby="reportsTitle">
+        <div class="page-heading report-page-heading">
+          <div><p class="eyebrow">CUSTOMER DELIVERABLES</p><h1 id="reportsTitle">Security Reports</h1><p>สรุปผลจาก Telemetry จริงของ Tenant ที่เลือก พร้อม Print/PDF และ CSV</p></div>
+          <span id="reportTenantBadge" class="count-pill">default</span>
+        </div>
+        <div class="report-workbench">
+          <aside class="report-side-stack">
+            <form id="reportForm" class="card report-form">
+              <div class="card-title"><h2>Generate report</h2><span>Tenant scoped</span></div>
+              <label>Report title<input id="reportTitle" maxlength="200" placeholder="Monthly Security Report"></label>
+              <div class="customer-form-grid"><label>From<input id="reportStart" type="date" required></label><label>To<input id="reportEnd" type="date" required></label></div>
+              <button id="generateReportButton" class="button-primary" type="submit">สร้าง Report</button>
+            </form>
+            <article class="card report-history-card">
+              <div class="card-title"><h2>Report history</h2><span id="reportHistoryState">0 reports</span></div>
+              <div id="reportHistory" class="report-history"></div>
+            </article>
+          </aside>
+          <article class="card report-preview-card">
+            <div class="report-preview-toolbar"><div><p class="eyebrow">REPORT PREVIEW</p><h2 id="reportPreviewTitle">ยังไม่มี Report</h2></div><div><button id="reportCsvButton" class="button-secondary" type="button" disabled>Download CSV</button><button id="reportPrintButton" class="button-primary" type="button" disabled>Print / Save PDF</button></div></div>
+            <div id="reportPreview" class="report-preview-empty"><span>▤</span><strong>สร้างหรือเลือก Report</strong><small>ข้อมูลทุกส่วนจะถูกกรองตาม Customer ที่เลือกอยู่ด้านบน</small></div>
+          </article>
+        </div>
+      </section>
+
       <section class="page" data-page="analyst" aria-labelledby="analystTitle">
-        <div class="page-heading"><div><p class="eyebrow">EXPLAINABLE AI</p><h1 id="analystTitle">NT Shield AI Analyst</h1><p>คำแนะนำจากข้อมูลจริง โดยยังให้คนอนุมัติการตอบสนอง</p></div><span class="count-pill">Human-in-the-loop</span></div>
-        <div class="analyst-layout"><article class="card ai-summary"><div class="ai-orb">AI</div><h2>สิ่งที่ควรทำตอนนี้</h2><ul id="analystPageInsights"><li>กำลังประเมินข้อมูล…</li></ul></article><article class="card guardrail-card"><h2>ขอบเขตความปลอดภัย</h2><p>AI Analyst วิเคราะห์และเสนอแนวทาง แต่ไม่สั่ง block IP, isolate host, stop service หรือ kill process โดยไม่มีขั้นตอนอนุมัติของ Operator</p><div class="guardrail-flow"><span>Telemetry</span><b>→</b><span>AI Analysis</span><b>→</b><span>Operator Approval</span><b>→</b><span>Agent Action</span></div></article></div>
+        <div class="page-heading analyst-page-heading"><div><p class="eyebrow">EXPLAINABLE AI · INVESTIGATION WORKBENCH</p><h1 id="analystTitle">NT Shield AI Analyst</h1><p>AI สืบสวนจากหลักฐานจริง อธิบายทุกข้อสรุป และส่งการตอบสนองให้คนอนุมัติ</p></div><div class="analyst-heading-actions"><span class="count-pill"><i class="live-dot"></i> Human-in-the-loop</span><button id="analystAnalyzeButton" class="button-primary analyst-primary-action" type="button">ให้ AI สืบสวนคดีนี้</button></div></div>
+
+        <section class="card analyst-command-center" aria-label="สถานะการสืบสวนของ AI">
+          <div class="analyst-agent-intro"><span class="analyst-agent-mark">NT/AI</span><div><p class="eyebrow">ACTIVE INVESTIGATOR</p><h2 id="analystMissionTitle">AI พร้อมเริ่มสืบสวน</h2><p id="analystMissionCopy">เลือก Incident แล้วระบบจะเชื่อมเหตุการณ์ ทดสอบสมมติฐาน และจัดลำดับสิ่งที่ควรทำต่อ</p></div></div>
+          <div class="analyst-investigation-flow" aria-label="AI investigation stages">
+            <span data-analyst-stage="observe"><b>01</b><strong>Observe</strong><small>รวบรวมหลักฐาน</small></span>
+            <span data-analyst-stage="correlate"><b>02</b><strong>Correlate</strong><small>เชื่อมเหตุการณ์</small></span>
+            <span data-analyst-stage="hypothesize"><b>03</b><strong>Hypothesize</strong><small>ทดสอบคำอธิบาย</small></span>
+            <span data-analyst-stage="recommend"><b>04</b><strong>Recommend</strong><small>เสนอสิ่งที่ควรทำ</small></span>
+            <span data-analyst-stage="approve"><b>05</b><strong>Human approval</strong><small>รอผู้ปฏิบัติงาน</small></span>
+          </div>
+          <div class="analyst-control-boundary"><small>AUTONOMY BOUNDARY</small><strong>Explain & recommend</strong><span>AI ไม่มีสิทธิ์เปลี่ยนระบบเอง</span></div>
+        </section>
+
+        <div class="analyst-kpis" aria-label="AI Analyst status">
+          <article class="card analyst-kpi"><span class="kpi-icon">◎</span><div><small>Incidents ที่วิเคราะห์</small><b id="analystAnalyzedCount">0</b></div></article>
+          <article class="card analyst-kpi"><span class="kpi-icon amber">!</span><div><small>คำแนะนำรออนุมัติ</small><b id="analystApprovalCount">0</b></div></article>
+          <article class="card analyst-kpi"><span class="kpi-icon blue">⌁</span><div><small>Evidence ที่อ้างอิงได้</small><b id="analystEvidenceCount">0</b></div></article>
+          <article class="card analyst-kpi analyst-safety-kpi"><span class="kpi-icon green">✓</span><div><small>สิทธิ์ของ AI</small><b>Read-only</b></div><span class="kpi-note">ไม่สามารถสั่งระบบเอง</span></article>
+        </div>
+
+        <div class="analyst-workbench">
+          <aside class="card analyst-inbox">
+            <div class="card-title"><h2>Incident queue</h2><span id="analystQueueCount">0 รายการ</span></div>
+            <div class="analyst-filter-row"><input id="analystSearch" type="search" placeholder="ค้นหา Incident, host, IP"><select id="analystSeverityFilter"><option value="">ทุกระดับ</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></div>
+            <div id="analystIncidentList" class="analyst-incident-list"></div>
+          </aside>
+
+          <div class="analyst-main">
+            <article class="card analyst-verdict-card">
+              <div class="analyst-verdict-head"><div><p class="eyebrow">AI CASE HYPOTHESIS · EVIDENCE-GROUNDED</p><h2 id="analystVerdictTitle">เลือก Incident เพื่อเริ่มวิเคราะห์</h2><p id="analystVerdictSubtitle">ระบบจะแสดงข้อสรุปจาก Telemetry ที่ตรวจพบจริง</p></div><div id="analystVerdictBadge" class="analyst-verdict-badge">รอข้อมูล</div></div>
+              <div class="analyst-verdict-grid"><div class="analyst-confidence"><div class="confidence-ring" id="analystConfidenceRing"><strong id="analystConfidenceValue">—</strong><small>confidence</small></div><div><b id="analystConfidenceBand">ยังไม่วิเคราะห์</b><span id="analystConfidenceReason">ไม่มี Incident ที่เลือก</span></div></div><div class="analyst-summary-copy"><span class="fact-label">SUMMARY</span><p id="analystSummary">เลือก Incident จากคิวด้านซ้ายเพื่อดูเหตุผลและ Attack Chain</p></div></div>
+              <div class="analyst-brief-grid" aria-label="AI investigation brief">
+                <div><span>AI FOCUS</span><b id="analystFocus">ยังไม่มีคดีที่เลือก</b><small id="analystFocusDetail">สิ่งที่ AI กำลังตรวจสอบ</small></div>
+                <div><span>EVIDENCE COVERAGE</span><b id="analystCoverage">0 citations / 0 gaps</b><small>หลักฐานที่อ้างย้อนกลับได้เทียบกับช่องว่าง</small></div>
+                <div class="next-step"><span>NEXT BEST STEP</span><b id="analystNextStep">รอ Incident</b><small id="analystNextStepReason">AI จะเสนอขั้นตอนที่ลดความไม่แน่นอนได้มากที่สุด</small></div>
+              </div>
+              <div class="analyst-verdict-meta"><span id="analystSourceBadge">Evidence engine</span><span id="analystWindow">Data window —</span><span id="analystModelState">AI tools: 0</span></div>
+            </article>
+
+            <article class="card analyst-copilot-card">
+              <div class="analyst-copilot-head"><div><p class="eyebrow">INVESTIGATION COPILOT</p><h2>ถาม AI เกี่ยวกับคดีนี้</h2><p>ทุกคำตอบผูกกับ verdict, evidence และช่องว่างของ Incident ที่เลือกอยู่</p></div><span id="analystAnswerGrounding">Grounded in 0 citations</span></div>
+              <div class="analyst-question-chips" aria-label="คำถามแนะนำ"><button type="button" data-analyst-question="evidence">หลักฐานอะไรยืนยัน?</button><button type="button" data-analyst-question="alternative">มีคำอธิบายอื่นไหม?</button><button type="button" data-analyst-question="missing">ยังขาดหลักฐานอะไร?</button><button type="button" data-analyst-question="action">ควรทำอะไรต่อ?</button></div>
+              <div id="analystInvestigationAnswer" class="analyst-investigation-answer" aria-live="polite"><span>AI CASE BRIEF</span><p>เลือก Incident เพื่อให้ AI อธิบายคดีจากหลักฐานที่มีอยู่</p><small>คำตอบจะไม่สั่งเปลี่ยนแปลงระบบโดยอัตโนมัติ</small></div>
+              <form id="analystQuestionForm" class="analyst-question-form"><label for="analystQuestionInput">ถามต่อจากข้อมูลคดี</label><div><input id="analystQuestionInput" maxlength="300" autocomplete="off" placeholder="เช่น เหตุใด confidence จึงยังต่ำ?"><button class="button-primary" type="submit">ถาม AI</button></div></form>
+            </article>
+
+            <div class="analyst-detail-grid">
+              <article class="card analyst-detail-card"><div class="card-title"><h2>AI reconstructed attack chain</h2><span id="analystChainCount">0 steps</span></div><div id="analystChain" class="analyst-chain"></div></article>
+              <article class="card analyst-detail-card"><div class="card-title"><h2>AI reasoning trace</h2><span>ข้อเท็จจริง → การอนุมาน</span></div><div id="analystSignals" class="analyst-signals"></div></article>
+            </div>
+
+            <div class="analyst-lower-grid">
+              <article class="card analyst-evidence-card"><div class="card-title"><h2>Evidence cited by AI</h2><span id="analystLedgerState">0 citations</span></div><div id="analystEvidence" class="analyst-evidence-list"></div></article>
+              <article class="card analyst-response-card"><div class="card-title"><h2>AI recommended response</h2><span><i class="approval-lock">⌑</i> Operator required</span></div><p class="response-intro">AI อธิบายเหตุผล ผลกระทบ และวิธีย้อนกลับให้ครบ แต่การ Block, Isolate หรือ Stop จะเกิดขึ้นเมื่อคนอนุมัติเท่านั้น</p><div id="analystRecommendations" class="analyst-recommendations"></div></article>
+            </div>
+
+            <div class="analyst-unknown-grid"><article class="card"><div class="card-title"><h2>Competing hypotheses</h2><span>AI ท้าทายข้อสรุปตัวเอง</span></div><div id="analystAlternatives" class="analyst-plain-list"></div></article><article class="card"><div class="card-title"><h2>Evidence gaps</h2><span>สิ่งที่ต้องหาเพิ่ม</span></div><div id="analystMissing" class="analyst-plain-list"></div></article></div>
+          </div>
+        </div>
       </section>
 
       <section class="page" data-page="llm" aria-labelledby="llmTitle">
@@ -348,7 +513,10 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="topology.js" defer></script>
-  <script src="defense-map.js" defer></script>
-  <script src="app.js" defer></script>
+  <script src="tenant-report.js?v=20260807-tenant-report" defer></script>
+  <script src="vendor/d3.v7.min.js?v=7.9.0" defer></script>
+  <script src="vendor/topojson-client.min.js?v=3.1.0" defer></script>
+  <script src="defense-map.js?v=20260807-threat-events" defer></script>
+  <script src="app.js?v=20260807-ai-investigator-1" defer></script>
 </body>
 </html>

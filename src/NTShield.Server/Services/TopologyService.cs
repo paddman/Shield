@@ -30,10 +30,15 @@ public sealed class TopologyService
     {
         var raw = context.Request.Headers["X-NTShield-Tenant"].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(raw)) raw = "default";
-        raw = raw.Trim().ToLowerInvariant();
-        if (!TenantPattern.IsMatch(raw))
-            throw new TopologyValidationException("X-NTShield-Tenant must be 1-128 characters using letters, numbers, '.', '_', ':' or '-'.");
-        return raw;
+        return NormalizeTenantId(raw);
+    }
+
+    public static string NormalizeTenantId(string value)
+    {
+        value = value.Trim().ToLowerInvariant();
+        if (!TenantPattern.IsMatch(value))
+            throw new TopologyValidationException("Tenant id must be 1-128 characters using letters, numbers, '.', '_', ':' or '-'.");
+        return value;
     }
 
     public static IReadOnlyList<TopologyNodeKindDefinition> NodeKinds { get; } =
@@ -57,6 +62,7 @@ public sealed class TopologyService
         new() { Kind = "mikrotik", Label = "Mikrotik", Category = "network", Icon = "MT" },
         new() { Kind = "identity", Label = "AD / LDAP / IdP", Category = "identity", Icon = "ID" },
         new() { Kind = "sensor", Label = "Suricata / Zeek / EDR", Category = "security", Icon = "S" },
+        new() { Kind = "central", Label = "NT Shield Central", Category = "security", Icon = "NT" },
         new() { Kind = "cloud", Label = "Cloud / SaaS", Category = "cloud", Icon = "☁" },
         new() { Kind = "backup", Label = "Backup / Storage", Category = "data", Icon = "B" },
         new() { Kind = "custom", Label = "Custom", Category = "custom", Icon = "◇" }
@@ -232,11 +238,7 @@ public sealed class TopologyService
         _store.DeleteWorkflowAsync(ValidateTenant(tenantId), ValidateId(workflowId, "workflowId"));
 
     private static string ValidateTenant(string value)
-    {
-        value = value.Trim().ToLowerInvariant();
-        if (!TenantPattern.IsMatch(value)) throw new TopologyValidationException("Invalid tenant id.");
-        return value;
-    }
+        => NormalizeTenantId(value);
 
     private static string ValidateId(string value, string field)
     {

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using NTShield.Server.Syslog;
 using NTShield.Shared.Enums;
 using NTShield.Shared.Models;
@@ -138,19 +139,27 @@ public sealed class OpenSourceSignatureEngine
     {
         var sig = hit.Signature;
         var msg = hit.Message;
-        var sev = Enum.TryParse<Severity>(sig.Severity, true, out var s) ? s : Severity.Medium;
+        var forwarded = ParseForwardedAlert(hit);
+        var sev = forwarded?.Severity ?? (Enum.TryParse<Severity>(sig.Severity, true, out var s) ? s : Severity.Medium);
+        var title = forwarded?.Title ?? sig.Name;
+        var ruleId = forwarded?.RuleId ?? sig.Id;
+        var description = forwarded is not null
+            ? forwarded.Description ?? $"Forwarded alert from NT Shield Agent: {title}."
+            : $"Open-source signature hit ({sig.Source}): {sig.Id} MITRE {sig.MitreTechnique}. Msg: {Truncate(msg.Message, 400)}";
         return new DetectionAlert
         {
-            AlertId = Guid.NewGuid().ToString("N"),
+            AlertId = forwarded?.AlertId ?? Guid.NewGuid().ToString("N"),
             TimestampUtc = msg.TimestampUtc,
             ComputerName = msg.Host,
             AgentId = agentId,
-            RuleId = sig.Id,
-            RuleName = sig.Name,
+            RuleId = ruleId,
+            RuleName = title,
             Severity = sev,
-            Title = sig.Name,
-            Description = $"Open-source signature hit ({sig.Source}): {sig.Id} MITRE {sig.MitreTechnique}. Msg: {Truncate(msg.Message, 400)}",
-            SourceIp = msg.SourceIp ?? ExtractIp(msg.Message),
+            Title = title,
+            Description = description,
+            SourceIp = forwarded?.SourceIp ?? msg.SourceIp ?? ExtractIp(msg.Message),
+            DestinationIp = forwarded?.DestinationIp,
+            Username = forwarded?.Username,
             EventCount = 1,
             EvidenceJson = JsonSerializer.Serialize(new
             {
@@ -159,7 +168,8 @@ public sealed class OpenSourceSignatureEngine
                 msg.Host,
                 sig.Id,
                 sig.MitreTechnique,
-                sig.Category
+                sig.Category,
+                forwarded
             })
         };
     }
@@ -175,7 +185,9 @@ public sealed class OpenSourceSignatureEngine
             Severity = alert.Severity,
             Description = alert.Description,
             SourceIp = alert.SourceIp,
+            DestinationIp = alert.DestinationIp,
             DestinationHost = hit.Message.Host,
+            Username = alert.Username,
             FirstSeenUtc = alert.TimestampUtc,
             LastSeenUtc = alert.TimestampUtc,
             CorrelationKey = $"sig|{alert.RuleId}|{hit.Message.Host}|{alert.SourceIp}",
@@ -186,6 +198,55 @@ public sealed class OpenSourceSignatureEngine
 
     private static string Truncate(string s, int n) =>
         string.IsNullOrEmpty(s) || s.Length <= n ? s : s[..n] + "...";
+
+    private sealed record ForwardedAlertDetails(
+        string? AlertId,
+        string? RuleId,
+        Severity? Severity,
+        string? Title,
+        string? Description,
+        string? SourceIp,
+        string? DestinationIp,
+        string? Username);
+
+    private static ForwardedAlertDetails? ParseForwardedAlert(SignatureHit hit)
+    {
+        if (!string.Equals(hit.Signature.Id, "OS-NTSHIELD-ALERT", StringComparison.OrdinalIgnoreCase) ||
+            !hit.Message.Message.Contains("NTShield-ALERT", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var text = hit.Message.Message;
+        var severityText = ReadForwardedField(text, "Severity");
+        var severity = Enum.TryParse<Severity>(severityText, true, out var parsed) ? parsed : (Severity?)null;
+        var details = new ForwardedAlertDetails(
+            ReadForwardedField(text, "AlertId"),
+            ReadForwardedField(text, "RuleId"),
+            severity,
+            ReadForwardedField(text, "Title"),
+            ReadForwardedField(text, "Desc"),
+            ReadForwardedField(text, "SourceIp"),
+            ReadForwardedField(text, "DestIp"),
+            ReadForwardedField(text, "User"));
+
+        return string.IsNullOrWhiteSpace(details.Title) && string.IsNullOrWhiteSpace(details.Description)
+            ? null
+            : details;
+    }
+
+    private static string? ReadForwardedField(string text, string key)
+    {
+        var pattern = $@"(?:^|\s){Regex.Escape(key)}=(.*?)(?=\s(?:RuleId|Severity|Title|SourceIp|DestIp|User|Host|AlertId|Desc)=|$)";
+        var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var value = match.Groups[1].Value.Trim();
+        return string.IsNullOrWhiteSpace(value) || value == "-" ? null : value;
+    }
 
     private static string? ExtractIp(string msg)
     {

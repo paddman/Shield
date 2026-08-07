@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using NTShield.Server.Correlation;
 using NTShield.Server.Data;
 using NTShield.Server.Signatures;
 using NTShield.Shared.Contracts;
@@ -18,6 +19,7 @@ public sealed class SyslogListenerService : BackgroundService
     private readonly SyslogOptions _options;
     private readonly OpenSourceSignatureEngine _signatures;
     private readonly ICentralStore _store;
+    private readonly LateralMovementTracker _lateral;
     private readonly ILogger<SyslogListenerService> _logger;
     private UdpClient? _udp;
 
@@ -25,11 +27,13 @@ public sealed class SyslogListenerService : BackgroundService
         IOptions<SyslogOptions> options,
         OpenSourceSignatureEngine signatures,
         ICentralStore store,
+        LateralMovementTracker lateral,
         ILogger<SyslogListenerService> logger)
     {
         _options = options.Value;
         _signatures = signatures;
         _store = store;
+        _lateral = lateral;
         _logger = logger;
     }
 
@@ -111,6 +115,7 @@ public sealed class SyslogListenerService : BackgroundService
                     batch.Alerts.Add(alert);
                     var incident = OpenSourceSignatureEngine.ToIncident(hit);
                     await _store.UpsertIncidentAsync(incident);
+                    _lateral.IngestIncidents([incident]);
                     _logger.LogWarning(
                         "SYSLOG SIG {Id} {Name} host={Host} from={Ip} sev={Sev}",
                         hit.Signature.Id, hit.Signature.Name, parsed.Host, parsed.SourceIp, hit.Signature.Severity);

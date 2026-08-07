@@ -64,6 +64,13 @@ public class SqliteLocalStoreTests
     [Fact]
     public async Task Dpapi_Secret_RoundTrip()
     {
+        // ProtectedData uses Windows DPAPI. Keep the integration suite portable
+        // while the same test still exercises the implementation on Windows CI.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         var dir = Path.Combine(Path.GetTempPath(), "nts-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         var agent = Options.Create(new AgentOptions { AgentId = "s", ComputerName = "S", DataDirectory = dir });

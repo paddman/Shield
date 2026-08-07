@@ -124,7 +124,7 @@ public sealed class EndpointProtectionTests
                 RealTimeMonitoring = false,
                 ScheduledScanEnabled = false,
                 ScanPaths = [],
-                ExcludedPaths = ["C:\\Users\\*\\AppData\\Local\\Temp\\"],
+                ExcludedPaths = [Path.Combine(Path.GetTempPath(), "nts-excluded-*")],
                 ProtectionDataDirectory = "protection"
             }),
             Options.Create(new AgentOptions { AgentId = "test", ComputerName = "TEST", DataDirectory = root }),

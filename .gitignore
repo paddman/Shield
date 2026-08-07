@@ -10,6 +10,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+*.egg-info/
 *.user
 *.suo
 *.userosscache
@@ -27,6 +28,7 @@ logs/
 *.db-shm
 *.db-wal
 App_Data/
+ai-service/data/
 
 ## Secrets
 *.pfx

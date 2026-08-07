@@ -11,10 +11,27 @@ public interface ICentralStore
     Task<bool> HasIdempotencyKeyAsync(string key);
     Task SaveIdempotencyKeyAsync(string key);
     Task SaveBatchAsync(AgentIngestBatch batch);
+    Task<IReadOnlyList<SecurityEventRecord>> ListSecurityEventsAsync(
+        int take,
+        string? tenantId = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null);
     Task UpsertIncidentAsync(Incident incident);
-    Task<IReadOnlyList<Incident>> ListIncidentsAsync(int take);
-    Task<Incident?> GetIncidentAsync(string id);
-    Task<IReadOnlyList<object>> ListAgentsAsync();
+    Task<IReadOnlyList<Incident>> ListIncidentsAsync(
+        int take,
+        string? tenantId = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null);
+    Task<long> CountIncidentsAsync(
+        string? tenantId = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null);
+    Task<TenantReportAggregate> GetReportAggregateAsync(
+        string tenantId,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc);
+    Task<Incident?> GetIncidentAsync(string id, string? tenantId = null);
+    Task<IReadOnlyList<object>> ListAgentsAsync(string? tenantId = null);
     Task<IReadOnlyList<NetworkConnectionRecord>> FindOutboundAsync(
         string remoteIp,
         int? remotePort,
@@ -43,8 +60,18 @@ public interface ICentralStore
 
     /// <summary>Append heartbeat metrics sample for history charts.</summary>
     Task SaveAgentMetricsAsync(AgentHeartbeat hb);
-    Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60);
+    Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60, string? tenantId = null);
     Task<IReadOnlyList<AgentMetricsSample>> ListAgentMetricsAsync(string agentId, int take = 60);
+
+    // Customer registry, agent ownership and generated tenant reports.
+    Task<IReadOnlyList<CustomerTenant>> ListTenantsAsync();
+    Task<CustomerTenant?> GetTenantAsync(string tenantId);
+    Task UpsertTenantAsync(CustomerTenant tenant);
+    Task<IReadOnlyList<TenantAgentAssignment>> ListAgentAssignmentsAsync();
+    Task AssignAgentToTenantAsync(string tenantId, string agentId);
+    Task<IReadOnlyList<SecurityReportRecord>> ListReportsAsync(string tenantId, int take);
+    Task<SecurityReportRecord?> GetReportAsync(string tenantId, string reportId);
+    Task UpsertReportAsync(SecurityReportRecord report);
 
     // Tenant-scoped asset inventory, topology maps and declarative workflows.
     Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId);

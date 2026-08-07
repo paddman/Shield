@@ -259,6 +259,37 @@ public sealed class SqliteCentralStore : ICentralStore
             {
                 topologyTbl.CommandText =
                     """
+                    CREATE TABLE IF NOT EXISTS customer_tenants (
+                        tenant_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        legal_name TEXT,
+                        contact_name TEXT,
+                        contact_email TEXT,
+                        plan TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        notes TEXT,
+                        created_at_utc TEXT NOT NULL,
+                        updated_at_utc TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS tenant_agent_assignments (
+                        agent_id TEXT PRIMARY KEY,
+                        tenant_id TEXT NOT NULL,
+                        assigned_at_utc TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_tenant_agent_assignments_tenant ON tenant_agent_assignments(tenant_id, agent_id);
+
+                    CREATE TABLE IF NOT EXISTS security_reports (
+                        report_id TEXT PRIMARY KEY,
+                        tenant_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        period_start_utc TEXT NOT NULL,
+                        period_end_utc TEXT NOT NULL,
+                        generated_at_utc TEXT NOT NULL,
+                        payload TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_security_reports_tenant ON security_reports(tenant_id, generated_at_utc);
+
                     CREATE TABLE IF NOT EXISTS tenant_assets (
                         asset_id TEXT PRIMARY KEY,
                         tenant_id TEXT NOT NULL,
@@ -301,6 +332,14 @@ public sealed class SqliteCentralStore : ICentralStore
                         updated_at_utc TEXT NOT NULL
                     );
                     CREATE INDEX IF NOT EXISTS ix_detection_workflows_tenant ON detection_workflows(tenant_id, updated_at_utc);
+
+                    INSERT OR IGNORE INTO customer_tenants(
+                        tenant_id, name, plan, status, created_at_utc, updated_at_utc)
+                    VALUES ('default', 'Default customer', 'standard', 'active',
+                        strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+                    INSERT OR IGNORE INTO tenant_agent_assignments(agent_id, tenant_id, assigned_at_utc)
+                    SELECT agent_id, 'default', strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM agents;
                     """;
                 await topologyTbl.ExecuteNonQueryAsync();
             }
@@ -334,6 +373,21 @@ public sealed class SqliteCentralStore : ICentralStore
     {
         await UpsertAgentCoreAsync(req.AgentId, req.ComputerName, req.AgentVersion, req.OsVersion,
             queue: 0, db: 0, status: "Registered", ws: 0, skew: 0, hostIp: req.HostIp, thumb: req.CertificateThumbprint);
+
+        if (!string.IsNullOrWhiteSpace(req.TenantId))
+        {
+            await AssignAgentToTenantAsync(req.TenantId.Trim().ToLowerInvariant(), req.AgentId);
+        }
+        else
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "INSERT OR IGNORE INTO tenant_agent_assignments(agent_id, tenant_id, assigned_at_utc) VALUES ($agent, 'default', $assigned);";
+            cmd.Parameters.AddWithValue("$agent", req.AgentId);
+            cmd.Parameters.AddWithValue("$assigned", DateTimeOffset.UtcNow.ToString("O"));
+            await cmd.ExecuteNonQueryAsync();
+        }
     }
 
     public async Task UpsertAgentAsync(AgentHeartbeat hb)
@@ -643,19 +697,118 @@ public sealed class SqliteCentralStore : ICentralStore
         }
     }
 
-    public async Task<IReadOnlyList<Incident>> ListIncidentsAsync(int take)
+    public async Task<IReadOnlyList<SecurityEventRecord>> ListSecurityEventsAsync(
+        int take,
+        string? tenantId = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null)
     {
         await using var conn = Open();
         await using var cmd = conn.CreateCommand();
+        var filters = new List<string>();
+        if (!string.IsNullOrWhiteSpace(tenantId))
+        {
+            filters.Add("EXISTS (SELECT 1 FROM tenant_agent_assignments taa WHERE taa.agent_id=e.agent_id AND taa.tenant_id=$tenant)");
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+        }
+        if (fromUtc is not null)
+        {
+            filters.Add("e.timestamp_utc >= $from");
+            cmd.Parameters.AddWithValue("$from", fromUtc.Value.ToString("O"));
+        }
+        if (toUtc is not null)
+        {
+            filters.Add("e.timestamp_utc <= $to");
+            cmd.Parameters.AddWithValue("$to", toUtc.Value.ToString("O"));
+        }
+        var where = filters.Count == 0 ? string.Empty : $"WHERE {string.Join(" AND ", filters)}";
         cmd.CommandText =
-            """
+            $"""
+            SELECT e.id, e.agent_id, e.computer_name, e.event_id, e.timestamp_utc, e.username, e.domain,
+                   e.source_ip, e.source_port, e.destination_ip, e.destination_port, e.logon_type,
+                   e.process_id, e.process_path, e.status, e.raw_xml, e.event_record_id
+            FROM security_events e
+            {where}
+            ORDER BY e.timestamp_utc DESC
+            LIMIT $take;
+            """;
+        cmd.Parameters.AddWithValue("$take", take);
+        var list = new List<SecurityEventRecord>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            list.Add(new SecurityEventRecord
+            {
+                Id = reader.GetInt64(0),
+                AgentId = reader.GetString(1),
+                ComputerName = reader.GetString(2),
+                EventId = reader.GetInt32(3),
+                TimestampUtc = DateTimeOffset.Parse(reader.GetString(4)),
+                Username = reader.IsDBNull(5) ? null : reader.GetString(5),
+                Domain = reader.IsDBNull(6) ? null : reader.GetString(6),
+                SourceIp = reader.IsDBNull(7) ? null : reader.GetString(7),
+                SourcePort = reader.IsDBNull(8) ? null : reader.GetInt32(8),
+                DestinationIp = reader.IsDBNull(9) ? null : reader.GetString(9),
+                DestinationPort = reader.IsDBNull(10) ? null : reader.GetInt32(10),
+                LogonType = reader.IsDBNull(11) ? null : reader.GetInt32(11),
+                ProcessId = reader.IsDBNull(12) ? null : reader.GetInt32(12),
+                ProcessPath = reader.IsDBNull(13) ? null : reader.GetString(13),
+                Status = reader.IsDBNull(14) ? null : reader.GetString(14),
+                RawXml = reader.IsDBNull(15) ? string.Empty : reader.GetString(15),
+                EventRecordId = reader.IsDBNull(16) ? 0 : reader.GetInt64(16)
+            });
+        }
+
+        return list;
+    }
+
+    public async Task<IReadOnlyList<Incident>> ListIncidentsAsync(
+        int take,
+        string? tenantId = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        var filters = new List<string>();
+        if (!string.IsNullOrWhiteSpace(tenantId))
+        {
+            filters.Add(
+                """
+                (
+                    EXISTS (
+                        SELECT 1 FROM tenant_agent_assignments taa
+                        WHERE taa.tenant_id=$tenant
+                          AND (taa.agent_id=i.source_agent_id OR taa.agent_id=i.destination_agent_id))
+                    OR ($tenant='default' AND NOT EXISTS (
+                        SELECT 1 FROM tenant_agent_assignments mapped
+                        WHERE mapped.agent_id=i.source_agent_id OR mapped.agent_id=i.destination_agent_id))
+                )
+                """);
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+        }
+        if (fromUtc is not null)
+        {
+            filters.Add("i.last_seen_utc >= $from");
+            cmd.Parameters.AddWithValue("$from", fromUtc.Value.ToString("O"));
+        }
+        if (toUtc is not null)
+        {
+            filters.Add("i.last_seen_utc <= $to");
+            cmd.Parameters.AddWithValue("$to", toUtc.Value.ToString("O"));
+        }
+        var where = filters.Count == 0 ? string.Empty : $"WHERE {string.Join(" AND ", filters)}";
+        cmd.CommandText =
+            $"""
             SELECT incident_id, first_seen_utc, last_seen_utc, severity, title, description, correlation_key,
                    source_host, source_agent_id, source_ip, source_port, source_process_id, source_process_name,
                    source_process_path, source_service_names, source_command_line,
                    destination_host, destination_agent_id, destination_ip, destination_port,
                    username, domain, logon_type, failed_logon_count, successful_logon_count, privileged_logon,
                    evidence_json, status
-            FROM incidents ORDER BY last_seen_utc DESC LIMIT $take;
+            FROM incidents i
+            {where}
+            ORDER BY last_seen_utc DESC LIMIT $take;
             """;
         cmd.Parameters.AddWithValue("$take", take);
         var list = new List<Incident>();
@@ -668,7 +821,111 @@ public sealed class SqliteCentralStore : ICentralStore
         return list;
     }
 
-    public async Task<Incident?> GetIncidentAsync(string id)
+    public async Task<long> CountIncidentsAsync(
+        string? tenantId = null,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        var filters = new List<string>();
+        if (!string.IsNullOrWhiteSpace(tenantId))
+        {
+            filters.Add(
+                """
+                (
+                    EXISTS (
+                        SELECT 1 FROM tenant_agent_assignments taa
+                        WHERE taa.tenant_id=$tenant
+                          AND (taa.agent_id=i.source_agent_id OR taa.agent_id=i.destination_agent_id))
+                    OR ($tenant='default' AND NOT EXISTS (
+                        SELECT 1 FROM tenant_agent_assignments mapped
+                        WHERE mapped.agent_id=i.source_agent_id OR mapped.agent_id=i.destination_agent_id))
+                )
+                """);
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+        }
+        if (fromUtc is not null)
+        {
+            filters.Add("i.last_seen_utc >= $from");
+            cmd.Parameters.AddWithValue("$from", fromUtc.Value.ToString("O"));
+        }
+        if (toUtc is not null)
+        {
+            filters.Add("i.last_seen_utc <= $to");
+            cmd.Parameters.AddWithValue("$to", toUtc.Value.ToString("O"));
+        }
+        var where = filters.Count == 0 ? string.Empty : $"WHERE {string.Join(" AND ", filters)}";
+        cmd.CommandText = $"SELECT COUNT(*) FROM incidents i {where};";
+        return Convert.ToInt64(await cmd.ExecuteScalarAsync());
+    }
+
+    public async Task<TenantReportAggregate> GetReportAggregateAsync(
+        string tenantId,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc)
+    {
+        await using var conn = Open();
+        var result = new TenantReportAggregate();
+
+        await using (var eventCmd = conn.CreateCommand())
+        {
+            eventCmd.CommandText =
+                """
+                SELECT COUNT(*)
+                FROM security_events e
+                WHERE e.timestamp_utc >= $from AND e.timestamp_utc <= $to
+                  AND EXISTS (
+                    SELECT 1 FROM tenant_agent_assignments taa
+                    WHERE taa.tenant_id=$tenant AND taa.agent_id=e.agent_id);
+                """;
+            eventCmd.Parameters.AddWithValue("$tenant", tenantId);
+            eventCmd.Parameters.AddWithValue("$from", fromUtc.ToUniversalTime().ToString("O"));
+            eventCmd.Parameters.AddWithValue("$to", toUtc.ToUniversalTime().ToString("O"));
+            result.ThreatEvents = Convert.ToInt32(await eventCmd.ExecuteScalarAsync());
+        }
+
+        await using (var incidentCmd = conn.CreateCommand())
+        {
+            incidentCmd.CommandText =
+                """
+                SELECT COUNT(*),
+                       COALESCE(SUM(CASE WHEN LOWER(COALESCE(i.status,'')) IN ('closed','resolved') THEN 0 ELSE 1 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=4 THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=3 THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=2 THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=1 THEN 1 ELSE 0 END),0)
+                FROM incidents i
+                WHERE i.last_seen_utc >= $from AND i.last_seen_utc <= $to
+                  AND (
+                    EXISTS (
+                        SELECT 1 FROM tenant_agent_assignments taa
+                        WHERE taa.tenant_id=$tenant
+                          AND (taa.agent_id=i.source_agent_id OR taa.agent_id=i.destination_agent_id))
+                    OR ($tenant='default' AND NOT EXISTS (
+                        SELECT 1 FROM tenant_agent_assignments mapped
+                        WHERE mapped.agent_id=i.source_agent_id OR mapped.agent_id=i.destination_agent_id))
+                  );
+                """;
+            incidentCmd.Parameters.AddWithValue("$tenant", tenantId);
+            incidentCmd.Parameters.AddWithValue("$from", fromUtc.ToUniversalTime().ToString("O"));
+            incidentCmd.Parameters.AddWithValue("$to", toUtc.ToUniversalTime().ToString("O"));
+            await using var reader = await incidentCmd.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                result.Incidents = Convert.ToInt32(reader.GetValue(0));
+                result.OpenIncidents = Convert.ToInt32(reader.GetValue(1));
+                result.CriticalIncidents = Convert.ToInt32(reader.GetValue(2));
+                result.HighIncidents = Convert.ToInt32(reader.GetValue(3));
+                result.MediumIncidents = Convert.ToInt32(reader.GetValue(4));
+                result.LowIncidents = Convert.ToInt32(reader.GetValue(5));
+            }
+        }
+
+        return result;
+    }
+
+    public async Task<Incident?> GetIncidentAsync(string id, string? tenantId = null)
     {
         await using var conn = Open();
         await using var cmd = conn.CreateCommand();
@@ -680,9 +937,19 @@ public sealed class SqliteCentralStore : ICentralStore
                    destination_host, destination_agent_id, destination_ip, destination_port,
                    username, domain, logon_type, failed_logon_count, successful_logon_count, privileged_logon,
                    evidence_json, status
-            FROM incidents WHERE incident_id=$id LIMIT 1;
+            FROM incidents i
+            WHERE incident_id=$id
+              AND ($tenant IS NULL OR EXISTS (
+                    SELECT 1 FROM tenant_agent_assignments taa
+                    WHERE taa.tenant_id=$tenant
+                      AND (taa.agent_id=i.source_agent_id OR taa.agent_id=i.destination_agent_id))
+                   OR ($tenant='default' AND NOT EXISTS (
+                    SELECT 1 FROM tenant_agent_assignments mapped
+                    WHERE mapped.agent_id=i.source_agent_id OR mapped.agent_id=i.destination_agent_id)))
+            LIMIT 1;
             """;
         cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$tenant", (object?)tenantId ?? DBNull.Value);
         await using var reader = await cmd.ExecuteReaderAsync();
         if (!await reader.ReadAsync())
         {
@@ -692,7 +959,7 @@ public sealed class SqliteCentralStore : ICentralStore
         return ReadIncident(reader);
     }
 
-    public async Task<IReadOnlyList<object>> ListAgentsAsync()
+    public async Task<IReadOnlyList<object>> ListAgentsAsync(string? tenantId = null)
     {
         await using var conn = Open();
         await using var cmd = conn.CreateCommand();
@@ -703,8 +970,13 @@ public sealed class SqliteCentralStore : ICentralStore
                    db_size_bytes, working_set_bytes, clock_skew_seconds,
                    cpu_percent, mem_used_percent, disk_used_percent, net_rx_bps, net_tx_bps,
                    disk_read_bps, disk_write_bps, load1, host_mem_used, host_mem_total, metrics_summary
-            FROM agents ORDER BY last_seen_utc DESC;
+            FROM agents a
+            WHERE $tenant IS NULL OR EXISTS (
+                SELECT 1 FROM tenant_agent_assignments taa
+                WHERE taa.agent_id=a.agent_id AND taa.tenant_id=$tenant)
+            ORDER BY last_seen_utc DESC;
             """;
+        cmd.Parameters.AddWithValue("$tenant", (object?)tenantId ?? DBNull.Value);
         var list = new List<object>();
         var now = DateTimeOffset.UtcNow;
         await using var reader = await cmd.ExecuteReaderAsync();
@@ -1254,7 +1526,7 @@ public sealed class SqliteCentralStore : ICentralStore
         return list;
     }
 
-    public async Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60)
+    public async Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60, string? tenantId = null)
     {
         await using var conn = Open();
         await using var cmd = conn.CreateCommand();
@@ -1265,15 +1537,198 @@ public sealed class SqliteCentralStore : ICentralStore
                    db_size_bytes, working_set_bytes, clock_skew_seconds,
                    cpu_percent, mem_used_percent, disk_used_percent, net_rx_bps, net_tx_bps,
                    disk_read_bps, disk_write_bps, load1, host_mem_used, host_mem_total, metrics_summary
-            FROM agents WHERE agent_id=$id LIMIT 1;
+            FROM agents a
+            WHERE agent_id=$id
+              AND ($tenant IS NULL OR EXISTS (
+                    SELECT 1 FROM tenant_agent_assignments taa
+                    WHERE taa.agent_id=a.agent_id AND taa.tenant_id=$tenant))
+            LIMIT 1;
             """;
         cmd.Parameters.AddWithValue("$id", agentId);
+        cmd.Parameters.AddWithValue("$tenant", (object?)tenantId ?? DBNull.Value);
         await using var reader = await cmd.ExecuteReaderAsync();
         if (!await reader.ReadAsync()) return null;
         var item = ReadInventoryRow(reader, DateTimeOffset.UtcNow);
         await reader.DisposeAsync();
         item.MetricsHistory = (await ListAgentMetricsAsync(agentId, metricsTake)).ToList();
         return item;
+    }
+
+    public async Task<IReadOnlyList<CustomerTenant>> ListTenantsAsync()
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT tenant_id, name, legal_name, contact_name, contact_email, plan, status, notes, created_at_utc, updated_at_utc " +
+            "FROM customer_tenants ORDER BY name COLLATE NOCASE, tenant_id;";
+        var list = new List<CustomerTenant>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) list.Add(ReadTenant(reader));
+        return list;
+    }
+
+    public async Task<CustomerTenant?> GetTenantAsync(string tenantId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT tenant_id, name, legal_name, contact_name, contact_email, plan, status, notes, created_at_utc, updated_at_utc " +
+            "FROM customer_tenants WHERE tenant_id=$tenant LIMIT 1;";
+        cmd.Parameters.AddWithValue("$tenant", tenantId);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        return await reader.ReadAsync() ? ReadTenant(reader) : null;
+    }
+
+    public async Task UpsertTenantAsync(CustomerTenant tenant)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                """
+                INSERT INTO customer_tenants(
+                    tenant_id, name, legal_name, contact_name, contact_email, plan, status, notes,
+                    created_at_utc, updated_at_utc)
+                VALUES ($tenant, $name, $legal, $contact, $email, $plan, $status, $notes, $created, $updated)
+                ON CONFLICT(tenant_id) DO UPDATE SET
+                    name=excluded.name,
+                    legal_name=excluded.legal_name,
+                    contact_name=excluded.contact_name,
+                    contact_email=excluded.contact_email,
+                    plan=excluded.plan,
+                    status=excluded.status,
+                    notes=excluded.notes,
+                    updated_at_utc=excluded.updated_at_utc;
+                """;
+            cmd.Parameters.AddWithValue("$tenant", tenant.TenantId);
+            cmd.Parameters.AddWithValue("$name", tenant.Name);
+            cmd.Parameters.AddWithValue("$legal", (object?)tenant.LegalName ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$contact", (object?)tenant.ContactName ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$email", (object?)tenant.ContactEmail ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$plan", tenant.Plan);
+            cmd.Parameters.AddWithValue("$status", tenant.Status);
+            cmd.Parameters.AddWithValue("$notes", (object?)tenant.Notes ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$created", tenant.CreatedAtUtc.ToString("O"));
+            cmd.Parameters.AddWithValue("$updated", tenant.UpdatedAtUtc.ToString("O"));
+            await cmd.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<TenantAgentAssignment>> ListAgentAssignmentsAsync()
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT tenant_id, agent_id, assigned_at_utc FROM tenant_agent_assignments ORDER BY tenant_id, agent_id;";
+        var list = new List<TenantAgentAssignment>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            list.Add(new TenantAgentAssignment
+            {
+                TenantId = reader.GetString(0),
+                AgentId = reader.GetString(1),
+                AssignedAtUtc = DateTimeOffset.Parse(reader.GetString(2))
+            });
+        }
+        return list;
+    }
+
+    public async Task AssignAgentToTenantAsync(string tenantId, string agentId)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                """
+                INSERT INTO tenant_agent_assignments(agent_id, tenant_id, assigned_at_utc)
+                SELECT $agent, $tenant, $assigned
+                WHERE EXISTS (SELECT 1 FROM agents WHERE agent_id=$agent)
+                  AND EXISTS (SELECT 1 FROM customer_tenants WHERE tenant_id=$tenant)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    tenant_id=excluded.tenant_id,
+                    assigned_at_utc=excluded.assigned_at_utc;
+                """;
+            cmd.Parameters.AddWithValue("$agent", agentId);
+            cmd.Parameters.AddWithValue("$tenant", tenantId);
+            cmd.Parameters.AddWithValue("$assigned", DateTimeOffset.UtcNow.ToString("O"));
+            await cmd.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<SecurityReportRecord>> ListReportsAsync(string tenantId, int take)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT payload FROM security_reports WHERE tenant_id=$tenant ORDER BY generated_at_utc DESC LIMIT $take;";
+        cmd.Parameters.AddWithValue("$tenant", tenantId);
+        cmd.Parameters.AddWithValue("$take", take);
+        var list = new List<SecurityReportRecord>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var report = JsonSerializer.Deserialize<SecurityReportRecord>(reader.GetString(0), JsonOptions);
+            if (report is not null) list.Add(report);
+        }
+        return list;
+    }
+
+    public async Task<SecurityReportRecord?> GetReportAsync(string tenantId, string reportId)
+    {
+        await using var conn = Open();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT payload FROM security_reports WHERE tenant_id=$tenant AND report_id=$id LIMIT 1;";
+        cmd.Parameters.AddWithValue("$tenant", tenantId);
+        cmd.Parameters.AddWithValue("$id", reportId);
+        var payload = await cmd.ExecuteScalarAsync();
+        return payload is string json ? JsonSerializer.Deserialize<SecurityReportRecord>(json, JsonOptions) : null;
+    }
+
+    public async Task UpsertReportAsync(SecurityReportRecord report)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await using var conn = Open();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                """
+                INSERT INTO security_reports(
+                    report_id, tenant_id, title, period_start_utc, period_end_utc, generated_at_utc, payload)
+                VALUES ($id, $tenant, $title, $start, $end, $generated, $payload)
+                ON CONFLICT(report_id) DO UPDATE SET
+                    title=excluded.title,
+                    period_start_utc=excluded.period_start_utc,
+                    period_end_utc=excluded.period_end_utc,
+                    generated_at_utc=excluded.generated_at_utc,
+                    payload=excluded.payload
+                WHERE security_reports.tenant_id=excluded.tenant_id;
+                """;
+            cmd.Parameters.AddWithValue("$id", report.ReportId);
+            cmd.Parameters.AddWithValue("$tenant", report.TenantId);
+            cmd.Parameters.AddWithValue("$title", report.Title);
+            cmd.Parameters.AddWithValue("$start", report.PeriodStartUtc.ToString("O"));
+            cmd.Parameters.AddWithValue("$end", report.PeriodEndUtc.ToString("O"));
+            cmd.Parameters.AddWithValue("$generated", report.GeneratedAtUtc.ToString("O"));
+            cmd.Parameters.AddWithValue("$payload", JsonSerializer.Serialize(report, JsonOptions));
+            await cmd.ExecuteNonQueryAsync();
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId)
@@ -1535,6 +1990,20 @@ public sealed class SqliteCentralStore : ICentralStore
             _gate.Release();
         }
     }
+
+    private static CustomerTenant ReadTenant(SqliteDataReader reader) => new()
+    {
+        TenantId = reader.GetString(0),
+        Name = reader.GetString(1),
+        LegalName = reader.IsDBNull(2) ? null : reader.GetString(2),
+        ContactName = reader.IsDBNull(3) ? null : reader.GetString(3),
+        ContactEmail = reader.IsDBNull(4) ? null : reader.GetString(4),
+        Plan = reader.GetString(5),
+        Status = reader.GetString(6),
+        Notes = reader.IsDBNull(7) ? null : reader.GetString(7),
+        CreatedAtUtc = DateTimeOffset.Parse(reader.GetString(8)),
+        UpdatedAtUtc = DateTimeOffset.Parse(reader.GetString(9))
+    };
 
     private static TenantAsset ReadAsset(SqliteDataReader reader)
     {

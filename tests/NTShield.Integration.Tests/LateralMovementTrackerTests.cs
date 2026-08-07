@@ -132,6 +132,100 @@ public class LateralMovementTrackerTests
         Assert.False(incident.ObserveBaseline);
     }
 
+    [Fact]
+    public void Campaign_summary_is_bounded_and_explains_representative_hops()
+    {
+        var tracker = CreateTracker();
+        var start = DateTimeOffset.UtcNow.AddMinutes(-12);
+        for (var index = 0; index < 12; index++)
+        {
+            tracker.IngestIncidents([
+                new Incident
+                {
+                    IncidentId = $"summary-inc-{index}",
+                    RuleId = "NETWORK_LOGON_BURST",
+                    Title = "Network Logon Burst",
+                    Severity = Severity.Medium,
+                    SourceIp = "10.0.0.1",
+                    DestinationIp = $"10.0.1.{index + 1}",
+                    LastSeen = start.AddMinutes(index)
+                }
+            ]);
+        }
+
+        var campaign = tracker.ListCampaigns().Single();
+        Assert.Equal(12, campaign.Hops.Count);
+        Assert.Contains("Showing 8 of 12 hops (4 omitted)", campaign.Summary);
+        Assert.Contains("10.0.1.1", campaign.Summary);
+        Assert.Contains("10.0.1.12", campaign.Summary);
+        Assert.True(campaign.Summary.Length < 1_500);
+    }
+
+    [Fact]
+    public void Attaches_latest_ml_observation_to_matching_campaign()
+    {
+        var tracker = CreateTracker();
+        var campaign = tracker.IngestIncidents([
+            new Incident
+            {
+                IncidentId = "ml-inc-1",
+                RuleId = "INTERNAL_PASSWORD_SPRAY",
+                Severity = Severity.High,
+                SourceAgentId = "agent-source",
+                SourceIp = "10.0.0.10",
+                DestinationAgentId = "agent-destination",
+                DestinationIp = "10.0.0.20",
+                LastSeen = DateTimeOffset.UtcNow
+            }
+        ]).Single();
+
+        var updated = tracker.ApplyAnomaly(
+            "agent-source", .91, .84, 27, "isolation_forest+robust_mad",
+            DateTimeOffset.UtcNow, ["failed_logons", "unique_remote_ports"]);
+
+        var result = tracker.GetCampaign(campaign.CampaignId);
+        Assert.Equal(1, updated);
+        Assert.NotNull(result);
+        Assert.Equal(.91, result!.MlScore);
+        Assert.Equal(.84, result.MlConfidence);
+        Assert.Equal(27, result.MlBaselineSamples);
+        Assert.Contains("failed_logons", result.MlSignals);
+        Assert.Single(result.MlHistory);
+        Assert.Equal(.91, result.MlHistory[0].Score);
+    }
+
+    [Fact]
+    public void Keeps_ml_history_ordered_and_bounded()
+    {
+        var tracker = CreateTracker();
+        var campaign = tracker.IngestIncidents([
+            new Incident
+            {
+                IncidentId = "ml-history-inc-1",
+                RuleId = "INTERNAL_PASSWORD_SPRAY",
+                Severity = Severity.High,
+                SourceAgentId = "agent-history",
+                SourceIp = "10.0.0.30",
+                DestinationIp = "10.0.0.40",
+                LastSeen = DateTimeOffset.UtcNow
+            }
+        ]).Single();
+
+        var start = DateTimeOffset.UtcNow.AddMinutes(-60);
+        for (var index = 0; index < 60; index++)
+        {
+            tracker.ApplyAnomaly(
+                "agent-history", index / 100.0, .8, 20 + index,
+                "isolation_forest+robust_mad", start.AddMinutes(index), ["signal"]);
+        }
+
+        var result = tracker.GetCampaign(campaign.CampaignId)!;
+        Assert.Equal(48, result.MlHistory.Count);
+        Assert.Equal(start.AddMinutes(12), result.MlHistory[0].ObservedAtUtc);
+        Assert.Equal(start.AddMinutes(59), result.MlHistory[^1].ObservedAtUtc);
+        Assert.Equal(.59, result.MlHistory[^1].Score);
+    }
+
     private sealed class NullCentralStore : ICentralStore
     {
         public Task InitializeAsync() => Task.CompletedTask;
@@ -140,10 +234,15 @@ public class LateralMovementTrackerTests
         public Task<bool> HasIdempotencyKeyAsync(string key) => Task.FromResult(false);
         public Task SaveIdempotencyKeyAsync(string key) => Task.CompletedTask;
         public Task SaveBatchAsync(AgentIngestBatch batch) => Task.CompletedTask;
+        public Task<IReadOnlyList<SecurityEventRecord>> ListSecurityEventsAsync(int take, string? tenantId = null, DateTimeOffset? fromUtc = null, DateTimeOffset? toUtc = null) =>
+            Task.FromResult<IReadOnlyList<SecurityEventRecord>>(Array.Empty<SecurityEventRecord>());
         public Task UpsertIncidentAsync(Incident incident) => Task.CompletedTask;
-        public Task<IReadOnlyList<Incident>> ListIncidentsAsync(int take) => Task.FromResult<IReadOnlyList<Incident>>(Array.Empty<Incident>());
-        public Task<Incident?> GetIncidentAsync(string id) => Task.FromResult<Incident?>(null);
-        public Task<IReadOnlyList<object>> ListAgentsAsync() => Task.FromResult<IReadOnlyList<object>>(Array.Empty<object>());
+        public Task<IReadOnlyList<Incident>> ListIncidentsAsync(int take, string? tenantId = null, DateTimeOffset? fromUtc = null, DateTimeOffset? toUtc = null) => Task.FromResult<IReadOnlyList<Incident>>(Array.Empty<Incident>());
+        public Task<long> CountIncidentsAsync(string? tenantId = null, DateTimeOffset? fromUtc = null, DateTimeOffset? toUtc = null) => Task.FromResult(0L);
+        public Task<TenantReportAggregate> GetReportAggregateAsync(string tenantId, DateTimeOffset fromUtc, DateTimeOffset toUtc) =>
+            Task.FromResult(new TenantReportAggregate());
+        public Task<Incident?> GetIncidentAsync(string id, string? tenantId = null) => Task.FromResult<Incident?>(null);
+        public Task<IReadOnlyList<object>> ListAgentsAsync(string? tenantId = null) => Task.FromResult<IReadOnlyList<object>>(Array.Empty<object>());
         public Task<IReadOnlyList<NetworkConnectionRecord>> FindOutboundAsync(string remoteIp, int? remotePort, DateTimeOffset from, DateTimeOffset to) =>
             Task.FromResult<IReadOnlyList<NetworkConnectionRecord>>(Array.Empty<NetworkConnectionRecord>());
         public Task SavePendingActionAsync(ResponseActionRequest request, string agentKey) => Task.CompletedTask;
@@ -163,7 +262,18 @@ public class LateralMovementTrackerTests
         public Task SaveAgentMetricsAsync(AgentHeartbeat hb) => Task.CompletedTask;
         public Task<IReadOnlyList<AgentMetricsSample>> ListAgentMetricsAsync(string agentId, int take = 60) =>
             Task.FromResult<IReadOnlyList<AgentMetricsSample>>(Array.Empty<AgentMetricsSample>());
-        public Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60) => Task.FromResult<AgentInventoryItem?>(null);
+        public Task<AgentInventoryItem?> GetAgentAsync(string agentId, int metricsTake = 60, string? tenantId = null) => Task.FromResult<AgentInventoryItem?>(null);
+        public Task<IReadOnlyList<CustomerTenant>> ListTenantsAsync() =>
+            Task.FromResult<IReadOnlyList<CustomerTenant>>(Array.Empty<CustomerTenant>());
+        public Task<CustomerTenant?> GetTenantAsync(string tenantId) => Task.FromResult<CustomerTenant?>(null);
+        public Task UpsertTenantAsync(CustomerTenant tenant) => Task.CompletedTask;
+        public Task<IReadOnlyList<TenantAgentAssignment>> ListAgentAssignmentsAsync() =>
+            Task.FromResult<IReadOnlyList<TenantAgentAssignment>>(Array.Empty<TenantAgentAssignment>());
+        public Task AssignAgentToTenantAsync(string tenantId, string agentId) => Task.CompletedTask;
+        public Task<IReadOnlyList<SecurityReportRecord>> ListReportsAsync(string tenantId, int take) =>
+            Task.FromResult<IReadOnlyList<SecurityReportRecord>>(Array.Empty<SecurityReportRecord>());
+        public Task<SecurityReportRecord?> GetReportAsync(string tenantId, string reportId) => Task.FromResult<SecurityReportRecord?>(null);
+        public Task UpsertReportAsync(SecurityReportRecord report) => Task.CompletedTask;
         public Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId) =>
             Task.FromResult<IReadOnlyList<TenantAsset>>(Array.Empty<TenantAsset>());
         public Task<TenantAsset?> GetAssetAsync(string tenantId, string assetId) => Task.FromResult<TenantAsset?>(null);

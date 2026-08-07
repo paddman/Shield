@@ -23,6 +23,15 @@ public sealed class ThreatCampaign
     public List<string> RelatedIncidentIds { get; set; } = [];
     public string Summary { get; set; } = string.Empty;
 
+    /// <summary>Latest per-asset ML observation associated with this campaign.</summary>
+    public double? MlScore { get; set; }
+    public double? MlConfidence { get; set; }
+    public int? MlBaselineSamples { get; set; }
+    public string? MlModel { get; set; }
+    public DateTimeOffset? MlObservedAtUtc { get; set; }
+    public List<string> MlSignals { get; set; } = [];
+    public List<ThreatMlObservation> MlHistory { get; set; } = [];
+
     public string FormatDisplay()
     {
         var hops = Hops.Count == 0
@@ -43,11 +52,23 @@ public sealed class ThreatCampaign
             IPs: {string.Join(", ", InvolvedIps)}
             Users: {string.Join(", ", InvolvedUsernames)}
             Related incidents: {string.Join(", ", RelatedIncidentIds)}
+            ML anomaly: {(MlScore.HasValue ? $"{MlScore:P0} confidence={MlConfidence:P0} baseline={MlBaselineSamples} model={MlModel}" : "not observed")}
             Lateral path (hops):
             {hops}
             Summary: {Summary}
             """;
     }
+}
+
+/// <summary>Bounded historical ML evidence retained with a threat campaign.</summary>
+public sealed class ThreatMlObservation
+{
+    public DateTimeOffset ObservedAtUtc { get; set; }
+    public double Score { get; set; }
+    public double Confidence { get; set; }
+    public int BaselineSamples { get; set; }
+    public string Model { get; set; } = string.Empty;
+    public List<string> Signals { get; set; } = [];
 }
 
 public sealed class ThreatHop

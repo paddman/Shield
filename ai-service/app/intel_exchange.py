@@ -15,6 +15,16 @@ from pydantic import Field, field_validator, model_validator
 from .models import ApiModel
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Commit/rollback like sqlite's context manager, then release the FD."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class IndicatorType(StrEnum):
     IP = "ip"
     DOMAIN = "domain"
@@ -131,7 +141,12 @@ class IntelExchangeStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._database_path, timeout=30, check_same_thread=False)
+        conn = sqlite3.connect(
+            self._database_path,
+            timeout=30,
+            check_same_thread=False,
+            factory=_ClosingConnection,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")

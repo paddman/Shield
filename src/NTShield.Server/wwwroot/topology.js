@@ -6,6 +6,7 @@
  * server does not need a second frontend build pipeline.
  */
 (function () {
+  const CENTRAL_NODE_ID = "ntshield-central";
   const fallbackKinds = [
     ["internet", "Internet", "edge", "◎"], ["dns", "DNS", "edge", "D"], ["cdn", "CDN", "edge", "◌"],
     ["waf", "WAF / AI-WAF", "security", "W"], ["api-gateway", "API Gateway", "application", "A"],
@@ -16,6 +17,7 @@
     ["switch", "Switch", "network", "SW"], ["firewall", "Firewall", "security", "FW"],
     ["vpn", "VPN", "security", "VPN"], ["mikrotik", "Mikrotik", "network", "MT"],
     ["identity", "AD / LDAP / IdP", "identity", "ID"], ["sensor", "Suricata / Zeek / EDR", "security", "S"],
+    ["central", "NT Shield Central", "security", "NT"],
     ["cloud", "Cloud / SaaS", "cloud", "☁"], ["backup", "Backup / Storage", "data", "B"], ["custom", "Custom", "custom", "◇"]
   ].map(([kind, label, category, icon]) => ({ kind, label, category, icon }));
 
@@ -76,24 +78,25 @@
   function asList(object) { return Array.isArray(object) ? object : []; }
 
   function normalizeTopology(raw) {
+    const nodes = asList(value(raw, "nodes")).map(node => ({
+      nodeId: value(node, "nodeId") || id(),
+      label: value(node, "label") || "New asset",
+      kind: value(node, "kind") || "custom",
+      category: value(node, "category") || categoryFor(value(node, "kind")),
+      assetId: value(node, "assetId") || null,
+      x: Number(value(node, "x")) || 40,
+      y: Number(value(node, "y")) || 40,
+      status: value(node, "status") || "unknown",
+      telemetrySourceIds: asList(value(node, "telemetrySourceIds")),
+      metadata: value(node, "metadata") || {}
+    }));
     return {
       topologyId: value(raw, "topologyId") || id(),
       tenantId: value(raw, "tenantId") || topologyState.getTenant(),
       name: value(raw, "name") || "Infrastructure map",
       description: value(raw, "description") || "",
       version: Number(value(raw, "version")) || 1,
-      nodes: asList(value(raw, "nodes")).map(node => ({
-        nodeId: value(node, "nodeId") || id(),
-        label: value(node, "label") || "New asset",
-        kind: value(node, "kind") || "custom",
-        category: value(node, "category") || categoryFor(value(node, "kind")),
-        assetId: value(node, "assetId") || null,
-        x: Number(value(node, "x")) || 40,
-        y: Number(value(node, "y")) || 40,
-        status: value(node, "status") || "unknown",
-        telemetrySourceIds: asList(value(node, "telemetrySourceIds")),
-        metadata: value(node, "metadata") || {}
-      })),
+      nodes: ensureCentralNode(nodes),
       edges: asList(value(raw, "edges")).map(edge => ({
         edgeId: value(edge, "edgeId") || id(),
         sourceNodeId: value(edge, "sourceNodeId") || "",
@@ -207,7 +210,36 @@
   }
 
   function newTopologyModel() {
-    return { topologyId: id(), tenantId: topologyState.getTenant(), name: "Infrastructure map", description: "", version: 1, nodes: [], edges: [], createdAtUtc: new Date().toISOString(), updatedAtUtc: new Date().toISOString() };
+    return { topologyId: id(), tenantId: topologyState.getTenant(), name: "Infrastructure map", description: "", version: 1, nodes: [createCentralNode()], edges: [], createdAtUtc: new Date().toISOString(), updatedAtUtc: new Date().toISOString() };
+  }
+
+  function createCentralNode() {
+    return {
+      nodeId: CENTRAL_NODE_ID,
+      label: "NT Shield Central",
+      kind: "central",
+      category: "security",
+      assetId: null,
+      x: 250,
+      y: 245,
+      status: "healthy",
+      telemetrySourceIds: [],
+      metadata: {
+        address: "/api/v1",
+        description: "Central correlation, telemetry and response control plane",
+        systemManaged: "true"
+      }
+    };
+  }
+
+  function ensureCentralNode(nodes) {
+    const central = nodes.find(isCentralNode);
+    if (central) {
+      central.category = "security";
+      central.metadata = { ...(central.metadata || {}), systemManaged: "true" };
+      return nodes;
+    }
+    return [createCentralNode(), ...nodes];
   }
 
   function newWorkflowModel() {
@@ -435,6 +467,8 @@
     const graph = topologyState.topology;
     const layer = $("#topologyNodeLayer");
     if (!graph || !layer) return;
+    const central = graph.nodes.find(isCentralNode);
+    if (central) positionCentralNode(central);
     layer.style.transform = `scale(${topologyState.topologyZoom})`;
     layer.replaceChildren();
     graph.nodes.forEach(node => layer.append(createTopologyNode(node)));
@@ -451,7 +485,7 @@
   function createTopologyNode(node) {
     const element = document.createElement("div");
     element.className = "topology-node";
-    element.dataset.nodeId = node.nodeId; element.dataset.category = node.category || categoryFor(node.kind);
+    element.dataset.nodeId = node.nodeId; element.dataset.kind = node.kind; element.dataset.category = node.category || categoryFor(node.kind);
     element.innerHTML = `<span class="topology-node-icon"></span><span class="topology-node-copy"><strong></strong><small></small></span><i class="topology-node-status"></i>`;
     element.querySelector(".topology-node-icon").textContent = iconFor(node.kind);
     element.querySelector("strong").textContent = node.label;
@@ -498,6 +532,20 @@
     element.style.top = `${node.y}px`;
   }
 
+  function positionCentralNode(node) {
+    if (node.metadata?.positionedByOperator === "true") return;
+    const canvas = $("#topologyCanvas");
+    const zoom = topologyState.topologyZoom || 1;
+    const width = canvas?.clientWidth || 654;
+    const height = canvas?.clientHeight || 550;
+    node.x = Math.max(12, width / zoom / 2 - 77);
+    node.y = Math.max(12, height / zoom / 2 - 30);
+  }
+
+  function isCentralNode(node) {
+    return node?.nodeId === CENTRAL_NODE_ID || node?.kind === "central" || node?.metadata?.systemManaged === "true";
+  }
+
   function bindGraphNode(element, node, graph) {
     element.addEventListener("pointerdown", event => {
       if (event.button !== 0) return;
@@ -522,6 +570,9 @@
       const move = moveEvent => {
         const next = pointFromEvent(moveEvent, graph);
         node.x = Math.max(8, next.x - offsetX); node.y = Math.max(8, next.y - offsetY);
+        if (graph === "topology" && isCentralNode(node)) {
+          node.metadata = { ...(node.metadata || {}), positionedByOperator: "true" };
+        }
         positionNode(element, node, graph);
         if (graph === "topology") { topologyState.topologyDirty = true; } else { topologyState.workflowDirty = true; }
         renderEdges(graph);
@@ -606,16 +657,28 @@
   function applyTopologyInspector() {
     const node = topologyState.topology?.nodes.find(item => item.nodeId === topologyState.topologySelected);
     if (!node) return;
-    const kind = $("#topologyNodeKind").value;
-    node.label = $("#topologyNodeLabel").value.trim() || "New asset";
+    const central = isCentralNode(node);
+    const kind = central ? "central" : $("#topologyNodeKind").value;
+    node.label = central ? "NT Shield Central" : $("#topologyNodeLabel").value.trim() || "New asset";
     node.kind = kind; node.category = categoryFor(kind); node.assetId = $("#topologyNodeAsset").value || null; node.status = $("#topologyNodeStatus").value;
     node.metadata = { ...(node.metadata || {}), address: $("#topologyNodeAddress").value.trim(), description: $("#topologyNodeDescription").value.trim() };
+    if (central) {
+      node.nodeId = CENTRAL_NODE_ID;
+      node.category = "security";
+      node.status = "healthy";
+      node.metadata.systemManaged = "true";
+    }
     topologyState.topologyDirty = true;
     renderTopology();
   }
 
   function removeTopologyNode(nodeId) {
     if (!nodeId || !topologyState.topology) return;
+    const node = topologyState.topology.nodes.find(item => item.nodeId === nodeId);
+    if (isCentralNode(node)) {
+      topologyState.toast?.("ไม่สามารถลบ NT Shield Central จาก Infrastructure Map ได้");
+      return;
+    }
     topologyState.topology.nodes = topologyState.topology.nodes.filter(node => node.nodeId !== nodeId);
     topologyState.topology.edges = topologyState.topology.edges.filter(edge => edge.sourceNodeId !== nodeId && edge.targetNodeId !== nodeId);
     topologyState.topologySelected = null; topologyState.topologyDirty = true; renderTopology();

@@ -677,33 +677,38 @@ public sealed class EndpointProtectionService : IFileProtectionService
 
     private bool IsExcluded(string path)
     {
-        var full = Path.GetFullPath(path);
+        var full = NormalizePolicyPath(Path.GetFullPath(path));
         foreach (var configured in _options.ExcludedPaths)
         {
             if (string.IsNullOrWhiteSpace(configured)) continue;
             var value = configured.Trim();
             if (value.Contains('*'))
             {
-                var wildcardRoot = value.Replace('/', '\\').TrimEnd('\\');
+                var wildcardRoot = NormalizePolicyPath(value);
                 var pattern = "^" + Regex.Escape(wildcardRoot)
-                    .Replace("\\*", "[^\\\\]*") + "(?:\\\\|$)";
+                    .Replace("\\*", "[^/]*") + "(?:/|$)";
                 if (Regex.IsMatch(full, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) return true;
                 continue;
             }
 
             if (Path.IsPathRooted(value))
             {
-                var root = Path.GetFullPath(value).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var root = NormalizePolicyPath(Path.GetFullPath(value));
                 if (string.Equals(full, root, StringComparison.OrdinalIgnoreCase) ||
-                    full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    full.StartsWith(root + '/', StringComparison.OrdinalIgnoreCase))
                     return true;
             }
-            if (!Path.IsPathRooted(value) && full.Contains(value.Trim('\\', '/'), StringComparison.OrdinalIgnoreCase))
+            var relative = NormalizePolicyPath(value).Trim('/');
+            if (!Path.IsPathRooted(value) && relative.Length > 0 &&
+                full.Contains(relative, StringComparison.OrdinalIgnoreCase))
                 return true;
         }
 
         return false;
     }
+
+    private static string NormalizePolicyPath(string path) =>
+        path.Replace('\\', '/').TrimEnd('/');
 
     private IEnumerable<string> EnumerateFilesSafe(string root, int max)
     {

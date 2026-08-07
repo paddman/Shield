@@ -9,6 +9,16 @@ from typing import Any
 
 from .code_scan_models import CodeScanAnalysis, CodeScanListItem, CodeScanRequest
 
+class _ClosingConnection(sqlite3.Connection):
+    """Commit/rollback like sqlite's context manager, then release the FD."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 _CREDENTIAL_KEY = (
     r"(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?token|auth[_-]?token|"
     r"refresh[_-]?token|client[_-]?secret|private[_-]?token|db[_-]?password|"
@@ -109,7 +119,12 @@ class CodeScanStore:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path, timeout=30, check_same_thread=False)
+        conn = sqlite3.connect(
+            self._path,
+            timeout=30,
+            check_same_thread=False,
+            factory=_ClosingConnection,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")

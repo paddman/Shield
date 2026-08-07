@@ -3,11 +3,10 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <RootNamespace>NTShield.Storage</RootNamespace>
     <Description>SQLite local storage, migrations, offline queue, DPAPI secrets</Description>
-    <!-- Transitive SQLitePCLRaw advisory until Microsoft.Data.Sqlite ships a fixed native pack -->
-    <NoWarn>$(NoWarn);NU1903</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />

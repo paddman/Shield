@@ -1,0 +1,24 @@
+[Unit]
+Description=NT Shield Brain anomaly and analyst service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ntshield
+Group=ntshield
+WorkingDirectory=/opt/ntshield/ai-service
+ExecStart=/opt/ntshield/ai-service/.venv/bin/python /opt/ntshield/ai-service/run_brain.py
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/ntshield/ai.env
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ntshield/ai
+
+[Install]
+WantedBy=multi-user.target

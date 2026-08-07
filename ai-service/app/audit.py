@@ -10,6 +10,16 @@ from typing import Any
 from .models import AnalystDecision, FeedbackRequest, UsageSummary
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Commit/rollback like sqlite's context manager, then release the FD."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class AuditStore:
     """Small durable store for analyses, audit events, feedback and ML baselines."""
 
@@ -20,7 +30,12 @@ class AuditStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._database_path, timeout=30, check_same_thread=False)
+        conn = sqlite3.connect(
+            self._database_path,
+            timeout=30,
+            check_same_thread=False,
+            factory=_ClosingConnection,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
