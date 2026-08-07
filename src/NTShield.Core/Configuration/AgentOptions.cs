@@ -117,6 +117,12 @@ public sealed class EventLogCollectorOptions
         },
         new()
         {
+            // PowerShell ScriptBlock/Module logging (when policy is enabled)
+            LogName = "Microsoft-Windows-PowerShell/Operational",
+            EventIds = [4103, 4104, 4105, 4106]
+        },
+        new()
+        {
             LogName = "Microsoft-Windows-WAS/Operational",
             EventIds = [5002, 5009, 5010, 5011, 5012, 5013, 5186]
         }
@@ -188,6 +194,31 @@ public sealed class DetectionOptions
     public int EvaluationIntervalSeconds { get; set; } = 10;
     public List<string> AllowlistUsernames { get; set; } = [];
     public List<string> AllowlistSourceIps { get; set; } = [];
+
+    /// <summary>Watch file activity for ransomware-style mass changes.</summary>
+    public bool FileActivityMonitoring { get; set; } = true;
+    public List<string> FileActivityPaths { get; set; } = [@"C:\Users"];
+    public List<string> FileActivityExcludedPaths { get; set; } =
+    [
+        @"\AppData\Local\Temp\",
+        @"\AppData\Local\Microsoft\",
+        @"\AppData\Local\Packages\",
+        @"\NTShield\Agent\logs\",
+        @"\NTShield\Agent\evidence\"
+    ];
+    public bool CanaryFiles { get; set; } = true;
+    public string CanaryDirectory { get; set; } = string.Empty;
+    public int FileActivityWindowSeconds { get; set; } = 60;
+    public int FileActivityMinEvents { get; set; } = 80;
+    public int FileActivityMinRenames { get; set; } = 20;
+    public int FileActivityMinDeletes { get; set; } = 20;
+    public int FileActivityEntropySamples { get; set; } = 32;
+    public double FileActivityHighEntropyThreshold { get; set; } = 7.2;
+    public double FileActivityHighEntropyRatio { get; set; } = 0.65;
+    public int FileActivityCooldownMinutes { get; set; } = 10;
+
+    /// <summary>Enable PowerShell ScriptBlock/Operational telemetry when supported.</summary>
+    public bool EnablePowerShellTelemetry { get; set; } = true;
 }
 
 public sealed class ResponseOptions

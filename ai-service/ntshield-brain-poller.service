@@ -1,0 +1,15 @@
+[Unit]
+Description=NT Shield Brain Central Incident Poller
+After=network-online.target ntshield-brain.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/adminmc/Shield/ai-service
+EnvironmentFile=/home/adminmc/Shield/ai-service/.env
+ExecStart=/home/adminmc/Shield/ai-service/.venv/bin/python /home/adminmc/Shield/ai-service/central_poller.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
