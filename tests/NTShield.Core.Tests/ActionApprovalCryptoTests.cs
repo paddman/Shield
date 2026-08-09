@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using NTShield.Shared.Models;
 using NTShield.Shared.Security;
 using Xunit;
@@ -10,6 +11,7 @@ public sealed class ActionApprovalCryptoTests
     public ActionApprovalCryptoTests()
     {
         ActionApprovalCrypto.ConfigureExpectedAgentId(null);
+        ActionApprovalCrypto.ConfigureReplayLedger(null);
     }
 
     [Fact]
@@ -45,6 +47,39 @@ public sealed class ActionApprovalCryptoTests
 
         ActionApprovalCrypto.ConfigureExpectedAgentId("agent-001");
         Assert.True(request.Approved);
+    }
+
+    [Fact]
+    public void Replayed_Action_Is_Rejected_After_Restart_Ledger_Reload()
+    {
+        var keys = CreateKeys();
+        ActionApprovalCrypto.ConfigureSigningKey(keys.PrivatePem, keys.PublicPem, keys.KeyId);
+        var ledger = Path.Combine(Path.GetTempPath(), $"ntshield-replay-{Guid.NewGuid():N}.log");
+
+        try
+        {
+            ActionApprovalCrypto.ConfigureExpectedAgentId("agent-001");
+            ActionApprovalCrypto.ConfigureReplayLedger(ledger);
+            var request = NewDestructiveRequest();
+            ActionApprovalCrypto.Sign(request, "operator", TimeSpan.FromMinutes(5));
+
+            Assert.True(request.Approved);
+            var serialized = JsonSerializer.Serialize(request);
+            var replay = JsonSerializer.Deserialize<ResponseActionRequest>(serialized)!;
+            Assert.False(replay.Approved);
+
+            // Simulate Agent service restart: reload nonce state from disk and
+            // deserialize the same valid signed envelope into a new object.
+            ActionApprovalCrypto.ConfigureReplayLedger(ledger);
+            var replayAfterRestart = JsonSerializer.Deserialize<ResponseActionRequest>(serialized)!;
+            Assert.False(replayAfterRestart.Approved);
+        }
+        finally
+        {
+            ActionApprovalCrypto.ConfigureExpectedAgentId(null);
+            ActionApprovalCrypto.ConfigureReplayLedger(null);
+            if (File.Exists(ledger)) File.Delete(ledger);
+        }
     }
 
     [Fact]
