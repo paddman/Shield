@@ -11,11 +11,21 @@ WorkingDirectory=/opt/ntshield/agent
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=30
-# Optional: Environment=NTSHIELD_Server__Url=https://10.0.0.5:7443
 Environment=DOTNET_ENVIRONMENT=Production
-# Allow writing logs if appsettings cannot update
-ReadWritePaths=/opt/ntshield /var/log/ntshield
+
+# Fail-closed service sandbox. Response actions remain allowlisted in-process;
+# the service receives no arbitrary shell endpoint.
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/opt/ntshield /var/log/ntshield /var/lib/ntshield
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
