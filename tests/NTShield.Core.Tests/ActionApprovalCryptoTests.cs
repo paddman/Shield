@@ -7,6 +7,11 @@ namespace NTShield.Core.Tests;
 
 public sealed class ActionApprovalCryptoTests
 {
+    public ActionApprovalCryptoTests()
+    {
+        ActionApprovalCrypto.ConfigureExpectedAgentId(null);
+    }
+
     [Fact]
     public void Signed_TargetBound_Action_Is_Approved()
     {
@@ -24,6 +29,22 @@ public sealed class ActionApprovalCryptoTests
         Assert.Equal(keys.KeyId, request.ApprovalKeyId);
         Assert.NotNull(request.PayloadSha256);
         Assert.NotNull(request.ApprovalSignature);
+    }
+
+    [Fact]
+    public void Signed_Action_Is_Rejected_By_Another_Agent()
+    {
+        var keys = CreateKeys();
+        ActionApprovalCrypto.ConfigureSigningKey(keys.PrivatePem, keys.PublicPem, keys.KeyId);
+        var request = NewDestructiveRequest();
+        ActionApprovalCrypto.Sign(request, "operator", TimeSpan.FromMinutes(5));
+        Assert.True(request.Approved);
+
+        ActionApprovalCrypto.ConfigureExpectedAgentId("agent-002");
+        Assert.False(request.Approved);
+
+        ActionApprovalCrypto.ConfigureExpectedAgentId("agent-001");
+        Assert.True(request.Approved);
     }
 
     [Fact]
