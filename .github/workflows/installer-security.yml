@@ -38,7 +38,11 @@ jobs:
             if ($errors.Count -gt 0) {
               $failed = $true
               Write-Host "Parser errors in $($_.FullName)" -ForegroundColor Red
-              $errors | ForEach-Object { Write-Host $_.Message -ForegroundColor Red }
+              $errors | ForEach-Object {
+                $line = $_.Extent.StartLineNumber
+                $message = $_.Message.Replace("`r", " ").Replace("`n", " ")
+                Write-Host "::error file=$($_.Extent.File),line=$line::$message"
+              }
             }
           }
           if ($failed) { throw "PowerShell parser validation failed" }
@@ -80,12 +84,24 @@ jobs:
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
-          & $iscc /Qp /DSourceRoot="$pwd" /DMyAppVersion="1.3.1" installer/NTShield.iss
-          if ($LASTEXITCODE -ne 0) { throw "Full installer definition failed" }
-          & $iscc /Qp /DSourceRoot="$pwd" /DMyAppVersion="1.3.1" installer/NTShield-Central.iss
-          if ($LASTEXITCODE -ne 0) { throw "Central installer definition failed" }
-          & $iscc /Qp /DSourceRoot="$pwd" /DMyAppVersion="1.3.1" installer/NTShield-Agent.iss
-          if ($LASTEXITCODE -ne 0) { throw "Agent installer definition failed" }
+
+          function Invoke-InnoCompile([string]$script, [string]$label) {
+            Write-Host "Compiling $script"
+            $output = & $iscc /Qp /DSourceRoot="$pwd" /DMyAppVersion="1.3.1" $script 2>&1
+            $exitCode = $LASTEXITCODE
+            $text = ($output | Out-String).Trim()
+            if ($text) { Write-Host $text }
+            if ($exitCode -ne 0) {
+              $annotation = $text.Replace("`r", " ").Replace("`n", " | ")
+              if ($annotation.Length -gt 6000) { $annotation = $annotation.Substring(0, 6000) }
+              Write-Host "::error file=$script::$annotation"
+              throw "$label installer definition failed with exit code $exitCode"
+            }
+          }
+
+          Invoke-InnoCompile "installer/NTShield.iss" "Full"
+          Invoke-InnoCompile "installer/NTShield-Central.iss" "Central"
+          Invoke-InnoCompile "installer/NTShield-Agent.iss" "Agent"
 
   bash:
     runs-on: ubuntu-latest
