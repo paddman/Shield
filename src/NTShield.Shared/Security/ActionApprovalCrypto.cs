@@ -342,10 +342,9 @@ public static class ActionApprovalCrypto
     }
 
     /// <summary>
-    /// Validate and reserve an action nonce exactly once for the configured local
-    /// agent. Re-reading Approved on the same in-memory request remains valid, but
-    /// a new request carrying the same nonce is rejected, including after restart
-    /// when a replay ledger is configured.
+    /// Validate and reserve an action nonce exactly once for an agent. Re-reading
+    /// Approved on the same in-memory request remains valid, but a new request
+    /// carrying the same nonce is rejected, including after service restart.
     /// </summary>
     public static bool ValidateAndReserve(
         ResponseActionRequest request,
@@ -355,18 +354,46 @@ public static class ActionApprovalCrypto
             return false;
 
         string? expectedAgentId;
-        lock (Gate) expectedAgentId = _expectedAgentId;
+        string? replayLedgerPath;
+        bool hasSigningKey;
+        lock (Gate)
+        {
+            expectedAgentId = _expectedAgentId;
+            replayLedgerPath = _replayLedgerPath;
+            hasSigningKey = !string.IsNullOrWhiteSpace(_signingPrivateKeyPem);
+        }
 
         // Central signs and serializes actions without a local endpoint binding;
-        // nonce consumption belongs only to an agent process.
-        if (string.IsNullOrWhiteSpace(expectedAgentId))
+        // nonce consumption belongs only to agent processes.
+        if (string.IsNullOrWhiteSpace(expectedAgentId) && hasSigningKey)
             return IsApprovalValid(request, nowUtc, enforceExpectedAgentId: false);
 
+        // Linux Agent currently performs an explicit TargetAgentId check before
+        // reading Approved. Give agent-only processes a protected default ledger
+        // even if their runtime has not supplied a custom path yet.
+        if (string.IsNullOrWhiteSpace(replayLedgerPath) && !hasSigningKey)
+        {
+            var defaultPath = OperatingSystem.IsWindows()
+                ? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "NTShield",
+                    "Agent",
+                    "action-replay.log")
+                : "/var/lib/ntshield/action-replay.log";
+            ConfigureReplayLedger(defaultPath);
+        }
+
         if (ReservedRequests.TryGetValue(request, out _))
-            return IsApprovalValid(request, nowUtc, enforceExpectedAgentId: true);
+            return IsApprovalValid(
+                request,
+                nowUtc,
+                enforceExpectedAgentId: !string.IsNullOrWhiteSpace(expectedAgentId));
 
         var now = nowUtc ?? DateTimeOffset.UtcNow;
-        if (!IsApprovalValid(request, now, enforceExpectedAgentId: true) ||
+        if (!IsApprovalValid(
+                request,
+                now,
+                enforceExpectedAgentId: !string.IsNullOrWhiteSpace(expectedAgentId)) ||
             string.IsNullOrWhiteSpace(request.Nonce) ||
             request.ExpiresAtUtc is null)
         {
@@ -376,16 +403,24 @@ public static class ActionApprovalCrypto
         lock (Gate)
         {
             if (ReservedRequests.TryGetValue(request, out _))
-                return IsApprovalValid(request, now, enforceExpectedAgentId: true);
+            {
+                return IsApprovalValid(
+                    request,
+                    now,
+                    enforceExpectedAgentId: !string.IsNullOrWhiteSpace(_expectedAgentId));
+            }
 
             PurgeExpiredNoncesLocked(now);
             if (ConsumedNonces.ContainsKey(request.Nonce))
                 return false;
 
-            if (!PersistNonceLocked(request.Nonce, request.ExpiresAtUtc.Value))
-                return false;
-
             ConsumedNonces[request.Nonce] = request.ExpiresAtUtc.Value;
+            if (!PersistNonceLocked(request.Nonce, request.ExpiresAtUtc.Value))
+            {
+                ConsumedNonces.Remove(request.Nonce);
+                return false;
+            }
+
             ReservedRequests.GetValue(request, static _ => new object());
             return true;
         }
