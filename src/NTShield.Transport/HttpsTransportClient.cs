@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
@@ -40,6 +41,18 @@ public sealed class HttpsTransportClient : ITransportClient, IDisposable
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("NTShield-Agent/1.0");
         if (!string.IsNullOrWhiteSpace(_options.ApiKey))
             SetApiKey(_options.ApiKey);
+
+        if (_options.AllowUntrustedServerCertificate)
+        {
+            _logger.LogCritical(
+                "Server:AllowUntrustedServerCertificate=true. TLS identity is not verified; never use this outside an isolated migration lab.");
+        }
+        else if (!string.IsNullOrWhiteSpace(_options.CaCertificatePath))
+        {
+            _logger.LogInformation(
+                "Central TLS uses custom trust anchor {Path}",
+                Environment.ExpandEnvironmentVariables(_options.CaCertificatePath));
+        }
     }
 
     public void SetApiKey(string? apiKey)
@@ -90,6 +103,17 @@ public sealed class HttpsTransportClient : ITransportClient, IDisposable
             handler.ServerCertificateCustomValidationCallback =
                 HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
         }
+        else if (!string.IsNullOrWhiteSpace(options.CaCertificatePath))
+        {
+            var path = Environment.ExpandEnvironmentVariables(options.CaCertificatePath);
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Central CA certificate not found", path);
+
+            var trustedCa = LoadTrustCertificate(path);
+            handler.ServerCertificateCustomValidationCallback =
+                (_, certificate, presentedChain, errors) =>
+                    ValidateWithCustomTrust(trustedCa, certificate, presentedChain, errors);
+        }
 
         if (options.EnableMtls && !string.IsNullOrWhiteSpace(options.ClientCertificatePath))
         {
@@ -106,6 +130,43 @@ public sealed class HttpsTransportClient : ITransportClient, IDisposable
         }
 
         return handler;
+    }
+
+    private static X509Certificate2 LoadTrustCertificate(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".pem", StringComparison.OrdinalIgnoreCase)
+            ? X509Certificate2.CreateFromPemFile(path)
+            : X509CertificateLoader.LoadCertificateFromFile(path);
+    }
+
+    private static bool ValidateWithCustomTrust(
+        X509Certificate2 trustedCa,
+        X509Certificate2? serverCertificate,
+        X509Chain? presentedChain,
+        SslPolicyErrors errors)
+    {
+        if (serverCertificate is null ||
+            (errors & SslPolicyErrors.RemoteCertificateNotAvailable) != 0 ||
+            (errors & SslPolicyErrors.RemoteCertificateNameMismatch) != 0)
+        {
+            return false;
+        }
+
+        using var customChain = new X509Chain();
+        customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        customChain.ChainPolicy.CustomTrustStore.Add(trustedCa);
+        customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+        customChain.ChainPolicy.DisableCertificateDownloads = true;
+
+        if (presentedChain is not null)
+        {
+            foreach (var element in presentedChain.ChainElements.Cast<X509ChainElement>().Skip(1))
+                customChain.ChainPolicy.ExtraStore.Add(element.Certificate);
+        }
+
+        return customChain.Build(serverCertificate);
     }
 
     public async Task<bool> IsReachableAsync(CancellationToken cancellationToken)
