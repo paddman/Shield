@@ -90,6 +90,10 @@ public sealed class RuntimePolicyState
 
     public void SeedFromLocal(AgentOptions agent, ResponseOptions response)
     {
+        // AgentIdentity is initialized before this method. Bind all signed
+        // response approvals to this exact endpoint identity.
+        ActionApprovalCrypto.ConfigureExpectedAgentId(agent.AgentId);
+
         lock (_gate)
         {
             _mode = string.IsNullOrWhiteSpace(agent.Mode) ? response.Mode : agent.Mode;
@@ -110,9 +114,6 @@ public sealed class RuntimePolicyState
         {
             if (policy.PolicyVersion <= _policyVersion) return false;
 
-            // Pin the Central action verification key before any pending action
-            // from the same heartbeat can be evaluated. Invalid PEM fails policy
-            // application and therefore leaves destructive response disabled.
             if (!string.IsNullOrWhiteSpace(policy.ActionSigningPublicKeyPem))
             {
                 try
