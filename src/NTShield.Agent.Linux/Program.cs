@@ -10,7 +10,7 @@ using NTShield.Shared;
 using NTShield.Shared.Contracts;
 using NTShield.Shared.Enums;
 using NTShield.Shared.Models;
-// AgentPolicy via Shared.Models
+using NTShield.Shared.Security;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -93,17 +93,24 @@ internal sealed class LinuxAgentWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var url = (_config["Server:Url"] ?? "https://localhost:7443").Trim().TrimEnd('/');
-        var allowUntrusted = _config.GetValue("Server:AllowUntrustedServerCertificate", true);
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var centralUri) ||
+            !string.Equals(centralUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Server:Url must be an absolute HTTPS URL.");
+        }
+
+        var allowUntrusted = _config.GetValue("Server:AllowUntrustedServerCertificate", false);
+        var caCertificatePath = _config["Server:CaCertificatePath"] ?? string.Empty;
         var heartbeatSec = Math.Max(15, _config.GetValue("Server:HeartbeatIntervalSeconds", 60));
         var metricsSec = Math.Max(5, _config.GetValue("Linux:MetricsIntervalSeconds", 30));
         var logSec = Math.Max(5, _config.GetValue("Linux:LogScanIntervalSeconds", 15));
         var ingestSec = Math.Max(10, _config.GetValue("Linux:IngestIntervalSeconds", 30));
-        _autoRemediate = _config.GetValue("Linux:AutoRemediate", true);
+        _autoRemediate = _config.GetValue("Linux:AutoRemediate", false);
         _cpuAlert = _config.GetValue("Linux:CpuAlertPercent", 90.0);
         _memAlert = _config.GetValue("Linux:MemAlertPercent", 90.0);
         _diskAlert = _config.GetValue("Linux:DiskAlertPercent", 90.0);
-        var enrollmentToken = _config["Server:EnrollmentToken"] ?? "";
-        _apiKey = _config["Server:ApiKey"] ?? "";
+        var enrollmentToken = _config["Server:EnrollmentToken"] ?? string.Empty;
+        _apiKey = _config["Server:ApiKey"] ?? string.Empty;
         var maxEventsBatch = Math.Clamp(_config.GetValue("Linux:MaxEventsPerIngest", 100), 10, 500);
         ProbeSelfIntegrity();
 
@@ -125,11 +132,17 @@ internal sealed class LinuxAgentWorker : BackgroundService
             "Linux Agent v{Version} Host={Host} AgentId={Id} Central={Url} AutoRemediate={Auto}",
             version, computer, agentId, url, _autoRemediate);
 
-        using var handler = new HttpClientHandler();
+        using var handler = CreateHttpHandler(allowUntrusted, caCertificatePath);
         if (allowUntrusted)
         {
-            handler.ServerCertificateCustomValidationCallback =
-                static (HttpRequestMessage _, X509Certificate2? _, X509Chain? _, SslPolicyErrors _) => true;
+            _logger.LogCritical(
+                "Server:AllowUntrustedServerCertificate=true. Central identity is not verified; never use this outside an isolated migration lab.");
+        }
+        else if (!string.IsNullOrWhiteSpace(caCertificatePath))
+        {
+            _logger.LogInformation(
+                "Central TLS uses custom trust anchor {Path}",
+                Environment.ExpandEnvironmentVariables(caCertificatePath));
         }
 
         using var http = new HttpClient(handler)
@@ -146,42 +159,49 @@ internal sealed class LinuxAgentWorker : BackgroundService
         // Warm metrics (first sample has no rates)
         _lastMetrics = _metrics.Snapshot();
 
-        try
+        if (string.IsNullOrWhiteSpace(_apiKey) || !string.IsNullOrWhiteSpace(enrollmentToken))
         {
-            var reg = new AgentRegistrationRequest
+            try
             {
-                AgentId = agentId,
-                ComputerName = computer,
-                AgentVersion = version,
-                OsVersion = Environment.OSVersion.ToString(),
-                HostIp = TryGetIp(),
-                EnrollmentToken = string.IsNullOrWhiteSpace(enrollmentToken) ? null : enrollmentToken,
-                BinarySha256 = _binarySha256,
-                IsBinarySigned = _isBinarySigned,
-                Platform = "linux",
-                RotateApiKey = string.IsNullOrWhiteSpace(_apiKey)
-            };
-            using var regResp = await http.PostAsJsonAsync("api/v1/agents/register", reg, stoppingToken);
-            _logger.LogInformation("Register → HTTP {Code}", (int)regResp.StatusCode);
-            if (regResp.IsSuccessStatusCode)
-            {
-                var body = await regResp.Content.ReadFromJsonAsync<AgentRegistrationResponse>(cancellationToken: stoppingToken);
-                if (!string.IsNullOrWhiteSpace(body?.AgentApiKey))
+                var reg = new AgentRegistrationRequest
                 {
-                    _apiKey = body.AgentApiKey;
-                    ApplyApiKeyHeader(http);
-                    PersistApiKey(_apiKey);
-                    _logger.LogInformation("Agent API key stored");
-                }
+                    AgentId = agentId,
+                    ComputerName = computer,
+                    AgentVersion = version,
+                    OsVersion = Environment.OSVersion.ToString(),
+                    HostIp = TryGetIp(),
+                    EnrollmentToken = string.IsNullOrWhiteSpace(enrollmentToken) ? null : enrollmentToken,
+                    BinarySha256 = _binarySha256,
+                    IsBinarySigned = _isBinarySigned,
+                    Platform = "linux",
+                    RotateApiKey = string.IsNullOrWhiteSpace(_apiKey)
+                };
+                using var regResp = await http.PostAsJsonAsync("api/v1/agents/register", reg, stoppingToken);
+                _logger.LogInformation("Register → HTTP {Code}", (int)regResp.StatusCode);
+                if (regResp.IsSuccessStatusCode)
+                {
+                    var body = await regResp.Content.ReadFromJsonAsync<AgentRegistrationResponse>(cancellationToken: stoppingToken);
+                    if (!string.IsNullOrWhiteSpace(body?.AgentApiKey))
+                    {
+                        _apiKey = body.AgentApiKey;
+                        ApplyApiKeyHeader(http);
+                        PersistApiKey(_apiKey);
+                        _logger.LogInformation("Agent API key stored; enrollment token removed from local configuration");
+                    }
 
-                if (body?.Policy is not null)
-                    ApplyPolicy(body.Policy, response);
+                    if (body?.Policy is not null)
+                        ApplyPolicy(body.Policy);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Register failed (agent remains in local monitoring mode)");
+                _lastError = "register: " + ex.Message;
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        else
         {
-            _logger.LogWarning(ex, "Register failed (will still run)");
-            _lastError = "register: " + ex.Message;
+            _logger.LogDebug("Skipping re-enrollment; an existing per-agent API key is configured");
         }
 
         var nextHb = DateTimeOffset.UtcNow;
@@ -348,24 +368,24 @@ internal sealed class LinuxAgentWorker : BackgroundService
                 !string.IsNullOrEmpty(result.SuggestedActionType) &&
                 result.SuggestedActionType != "LogOnly")
             {
-                var key = $"{result.SuggestedActionType}:{result.SuggestedService ?? ""}";
+                var key = $"{result.SuggestedActionType}:{result.SuggestedService ?? string.Empty}";
                 if (_remediateCooldown.TryGetValue(key, out var until) && until > DateTimeOffset.UtcNow)
                     continue;
                 _remediateCooldown[key] = DateTimeOffset.UtcNow.AddMinutes(15);
 
                 var req = new ResponseActionRequest
                 {
+                    TargetAgentId = agentId,
                     ActionType = result.SuggestedActionType!,
                     ServiceName = result.SuggestedService,
-                    Reason = $"Auto-remediate: {result.Event.SubStatus}",
+                    Reason = $"Local policy auto-remediate: {result.Event.SubStatus}",
                     Requester = "linux-agent-auto",
-                    Approved = true,
                     AlertId = result.Alert?.AlertId
                 };
-                _logger.LogWarning("Auto-remediate {Action} service={Svc} reason={Reason}",
+                _logger.LogWarning("Local auto-remediate {Action} service={Svc} reason={Reason}",
                     req.ActionType, req.ServiceName, req.Reason);
                 var rec = await response.ExecuteAsync(req, ct);
-                _logger.LogWarning("Auto-remediate result {Status} {Result} {Error}",
+                _logger.LogWarning("Local auto-remediate result {Status} {Result} {Error}",
                     rec.Status, rec.Result, rec.Error);
             }
         }
@@ -395,7 +415,6 @@ internal sealed class LinuxAgentWorker : BackgroundService
             _alertBuf.RemoveRange(0, takeA);
         }
 
-        // Attach host metrics as synthetic process-less batch note via a metrics event occasionally
         var batch = new AgentIngestBatch
         {
             AgentId = agentId,
@@ -418,7 +437,6 @@ internal sealed class LinuxAgentWorker : BackgroundService
             var body = await resp.Content.ReadAsStringAsync(ct);
             _logger.LogWarning("Ingest failed HTTP {Code}: {Body}", (int)resp.StatusCode, Truncate(body, 200));
             _lastError = $"ingest HTTP {(int)resp.StatusCode}";
-            // put back on failure
             lock (_bufGate)
             {
                 _eventBuf.InsertRange(0, events);
@@ -446,10 +464,8 @@ internal sealed class LinuxAgentWorker : BackgroundService
         catch { ws = 0; }
 
         var degraded = m.IsDegraded(_cpuAlert, _memAlert, _diskAlert);
-
         var metricsLine = _metrics.FormatStatusLine(m);
         var status = degraded ? "Degraded" : "Healthy";
-        // Encode metrics into Status for fleet visibility (Dashboard shows Status)
         status = $"{status} | {metricsLine}";
         if (status.Length > 240) status = status[..240];
 
@@ -507,7 +523,7 @@ internal sealed class LinuxAgentWorker : BackgroundService
         }
 
         if (hbResp?.Policy is not null)
-            ApplyPolicy(hbResp.Policy, response);
+            ApplyPolicy(hbResp.Policy);
 
         if (hbResp?.PendingActions is { Count: > 0 } actions)
         {
@@ -515,11 +531,34 @@ internal sealed class LinuxAgentWorker : BackgroundService
             {
                 try
                 {
+                    if (!string.Equals(action.TargetAgentId, agentId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogCritical(
+                            "Rejected target-mismatched action id={Id} expected={Expected} target={Target}",
+                            action.RequestId,
+                            agentId,
+                            action.TargetAgentId);
+                        continue;
+                    }
+
+                    if (ActionApprovalCrypto.RequiresApproval(action.ActionType) && !action.Approved)
+                    {
+                        _logger.LogCritical(
+                            "Rejected unsigned, tampered or expired Central action type={Type} id={Id}",
+                            action.ActionType,
+                            action.RequestId);
+                        continue;
+                    }
+
                     _logger.LogWarning(
-                        "Executing Central action {Type} target={Ip}:{Port} svc={Svc} id={Id}",
-                        action.ActionType, action.TargetIp, action.TargetPort, action.ServiceName, action.RequestId);
-                    action.Approved = true;
-                    action.ApprovalId ??= action.RequestId;
+                        "Executing verified Central action {Type} target={Ip}:{Port} svc={Svc} id={Id} approvedBy={ApprovedBy} expires={Expires}",
+                        action.ActionType,
+                        action.TargetIp,
+                        action.TargetPort,
+                        action.ServiceName,
+                        action.RequestId,
+                        action.ApprovedBy,
+                        action.ExpiresAtUtc);
                     var result = await response.ExecuteAsync(action, ct);
                     _logger.LogWarning("Action result {Type} status={Status} {Result}",
                         result.ActionType, result.Status, result.Result ?? result.Error);
@@ -544,43 +583,34 @@ internal sealed class LinuxAgentWorker : BackgroundService
         if (configured is { Length: > 0 })
             return configured;
 
-        // Defaults — only paths that exist will be tailed
         return
         [
-            // nginx
             "/var/log/nginx/error.log",
             "/var/log/nginx/access.log",
             "/var/log/nginx/*.log",
-            // apache
             "/var/log/apache2/error.log",
             "/var/log/httpd/error_log",
-            // PHP
             "/var/log/php*-fpm.log",
             "/var/log/php/error.log",
             "/var/log/php8.3-fpm.log",
             "/var/log/php8.2-fpm.log",
             "/var/log/php8.1-fpm.log",
             "/var/log/php-fpm/error.log",
-            // Docker
             "/var/log/docker.log",
             "/var/lib/docker/containers/*/*-json.log",
-            // Node / PM2
             "/var/log/nodejs/*.log",
             "/root/.pm2/logs/*.log",
             "/home/*/.pm2/logs/*.log",
             "/var/log/pm2/*.log",
-            // system
             "/var/log/syslog",
             "/var/log/messages",
             "/var/log/auth.log",
             "/var/log/secure",
             "/var/log/fail2ban.log",
-            // MySQL / Redis / Postgres (optional)
             "/var/log/mysql/error.log",
             "/var/log/mysqld.log",
             "/var/log/postgresql/*.log",
             "/var/log/redis/redis-server.log",
-            // Caddy / Traefik
             "/var/log/caddy/*.log",
             "/var/log/traefik/*.log"
         ];
@@ -629,15 +659,110 @@ internal sealed class LinuxAgentWorker : BackgroundService
             http.DefaultRequestHeaders.TryAddWithoutValidation("X-NTShield-Api-Key", _apiKey);
     }
 
-    private void ApplyPolicy(AgentPolicy policy, LinuxResponseExecutor response)
+    private void ApplyPolicy(AgentPolicy policy)
     {
         if (policy.PolicyVersion <= _appliedPolicyVersion) return;
+
+        if (!string.IsNullOrWhiteSpace(policy.ActionSigningPublicKeyPem))
+        {
+            try
+            {
+                ActionApprovalCrypto.ConfigureTrustedPublicKey(
+                    policy.ActionSigningPublicKeyPem,
+                    policy.ActionSigningKeyId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(
+                    ex,
+                    "Rejected Central policy v{Version}: invalid action-signing public key",
+                    policy.PolicyVersion);
+                return;
+            }
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Central policy v{Version} contains no action-signing key; destructive Central actions remain disabled",
+                policy.PolicyVersion);
+        }
+
         _appliedPolicyVersion = policy.PolicyVersion;
-        _autoRemediate = policy.AutoRemediate;
+        // Remote policy may reduce local automation. Enabling local automation
+        // still requires the explicit local startup configuration used to create
+        // LinuxResponseExecutor; this avoids a network policy silently granting
+        // itself destructive local authority.
+        if (!policy.AutoRemediate)
+            _autoRemediate = false;
         if (policy.CpuAlertPercent is double c) _cpuAlert = c;
         if (policy.MemAlertPercent is double m) _memAlert = m;
         if (policy.DiskAlertPercent is double d) _diskAlert = d;
-        _logger.LogWarning("Central policy applied v{Ver} autoRemediate={Auto}", policy.PolicyVersion, _autoRemediate);
+        _logger.LogWarning(
+            "Central policy applied v{Ver} localAutoRemediate={Auto} actionKey={KeyId}",
+            policy.PolicyVersion,
+            _autoRemediate,
+            policy.ActionSigningKeyId);
+    }
+
+    private static HttpClientHandler CreateHttpHandler(bool allowUntrusted, string? caCertificatePath)
+    {
+        var handler = new HttpClientHandler();
+        if (allowUntrusted)
+        {
+            handler.ServerCertificateCustomValidationCallback =
+                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+            return handler;
+        }
+
+        if (string.IsNullOrWhiteSpace(caCertificatePath))
+            return handler;
+
+        var path = Environment.ExpandEnvironmentVariables(caCertificatePath);
+        if (!File.Exists(path))
+            throw new FileNotFoundException("Central CA certificate not found", path);
+
+        var trustedCa = LoadTrustCertificate(path);
+        handler.ServerCertificateCustomValidationCallback =
+            (_, certificate, presentedChain, errors) =>
+                ValidateWithCustomTrust(trustedCa, certificate, presentedChain, errors);
+        return handler;
+    }
+
+    private static X509Certificate2 LoadTrustCertificate(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".pem", StringComparison.OrdinalIgnoreCase)
+            ? X509Certificate2.CreateFromPemFile(path)
+            : X509CertificateLoader.LoadCertificateFromFile(path);
+    }
+
+    private static bool ValidateWithCustomTrust(
+        X509Certificate2 trustedCa,
+        X509Certificate2? serverCertificate,
+        X509Chain? presentedChain,
+        SslPolicyErrors errors)
+    {
+        if (serverCertificate is null ||
+            (errors & SslPolicyErrors.RemoteCertificateNotAvailable) != 0 ||
+            (errors & SslPolicyErrors.RemoteCertificateNameMismatch) != 0)
+        {
+            return false;
+        }
+
+        using var customChain = new X509Chain();
+        customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        customChain.ChainPolicy.CustomTrustStore.Add(trustedCa);
+        customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+        customChain.ChainPolicy.DisableCertificateDownloads = true;
+
+        if (presentedChain is not null)
+        {
+            foreach (var element in presentedChain.ChainElements.Cast<X509ChainElement>().Skip(1))
+                customChain.ChainPolicy.ExtraStore.Add(element.Certificate);
+        }
+
+        return customChain.Build(serverCertificate);
     }
 
     private void ProbeSelfIntegrity()
@@ -651,11 +776,11 @@ internal sealed class LinuxAgentWorker : BackgroundService
             using var stream = File.OpenRead(path);
             var hash = System.Security.Cryptography.SHA256.HashData(stream);
             _binarySha256 = Convert.ToHexString(hash).ToLowerInvariant();
-            _isBinarySigned = false; // Linux binaries typically not Authenticode
+            _isBinarySigned = false;
         }
         catch
         {
-            // ignore
+            // Best-effort integrity telemetry only.
         }
     }
 
@@ -666,8 +791,10 @@ internal sealed class LinuxAgentWorker : BackgroundService
         var node = JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject();
         var server = node["Server"] as JsonObject ?? new JsonObject();
         server["ApiKey"] = apiKey;
+        server["EnrollmentToken"] = string.Empty;
         node["Server"] = server;
         File.WriteAllText(path, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        HardenSettingsFile(path);
     }
 
     private static void PersistAgentId(string agentId)
@@ -681,6 +808,20 @@ internal sealed class LinuxAgentWorker : BackgroundService
             agent["ComputerName"] = Environment.MachineName;
         node["Agent"] = agent;
         File.WriteAllText(path, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        HardenSettingsFile(path);
+    }
+
+    private static void HardenSettingsFile(string path)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        try
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        catch
+        {
+            // Installer also enforces mode 0600; runtime hardening is best effort.
+        }
     }
 
     private static string? TryGetIp()
