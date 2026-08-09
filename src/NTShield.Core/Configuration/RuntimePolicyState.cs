@@ -1,3 +1,5 @@
+using NTShield.Shared.Security;
+
 namespace NTShield.Core.Configuration;
 
 /// <summary>
@@ -107,6 +109,24 @@ public sealed class RuntimePolicyState
         lock (_gate)
         {
             if (policy.PolicyVersion <= _policyVersion) return false;
+
+            // Pin the Central action verification key before any pending action
+            // from the same heartbeat can be evaluated. Invalid PEM fails policy
+            // application and therefore leaves destructive response disabled.
+            if (!string.IsNullOrWhiteSpace(policy.ActionSigningPublicKeyPem))
+            {
+                try
+                {
+                    ActionApprovalCrypto.ConfigureTrustedPublicKey(
+                        policy.ActionSigningPublicKeyPem,
+                        policy.ActionSigningKeyId);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
             _policyVersion = policy.PolicyVersion;
             if (!string.IsNullOrWhiteSpace(policy.Mode))
                 _mode = policy.Mode;
