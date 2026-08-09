@@ -53,6 +53,8 @@ public sealed class AgentWorker : BackgroundService
     private bool _centralReachable;
     private string? _binarySha256;
     private bool? _isBinarySigned;
+    private double? _clockSkewSeconds;
+    private DateTimeOffset? _clockSkewMeasuredAtUtc;
 
     public AgentWorker(
         ILogger<AgentWorker> logger,
@@ -360,7 +362,9 @@ public sealed class AgentWorker : BackgroundService
             AgentId = _agentOptions.AgentId,
             ComputerName = _agentOptions.ComputerName,
             AgentVersion = _agentOptions.Version,
-            SentAtUtc = DateTimeOffset.UtcNow
+            SentAtUtc = DateTimeOffset.UtcNow,
+            ClockSkewSeconds = _clockSkewSeconds,
+            ClockSkewMeasuredAtUtc = _clockSkewMeasuredAtUtc
         };
 
         var ids = new List<long>();
@@ -535,6 +539,12 @@ public sealed class AgentWorker : BackgroundService
                     _logger.LogWarning("Central protection pack rejected: {Error}", packError);
                 }
             }
+        }
+
+        if (hbResp is not null && double.IsFinite(hbResp.ClockSkewSeconds))
+        {
+            _clockSkewSeconds = hbResp.ClockSkewSeconds;
+            _clockSkewMeasuredAtUtc = hbResp.ServerUtc;
         }
 
         if (hbResp?.PendingActions is { Count: > 0 } actions)

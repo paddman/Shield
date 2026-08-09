@@ -27,6 +27,9 @@ public sealed class TenantAgentAssignment
 public sealed class CreateSecurityReportRequest
 {
     public string? Title { get; set; }
+    public string? TemplateId { get; set; }
+    /// <summary>Expected template version selected in the editor; rejects stale generation.</summary>
+    public int? TemplateVersion { get; set; }
     public DateTimeOffset? PeriodStartUtc { get; set; }
     public DateTimeOffset? PeriodEndUtc { get; set; }
 }
@@ -37,6 +40,9 @@ public sealed class SecurityReportRecord
     public string TenantId { get; set; } = "default";
     public string CustomerName { get; set; } = string.Empty;
     public string Title { get; set; } = "Security operations report";
+    public string? TemplateId { get; set; }
+    /// <summary>Immutable rendering snapshot so later template edits do not change this report.</summary>
+    public ReportTemplateDefinition? TemplateSnapshot { get; set; }
     public DateTimeOffset PeriodStartUtc { get; set; }
     public DateTimeOffset PeriodEndUtc { get; set; }
     public DateTimeOffset GeneratedAtUtc { get; set; } = DateTimeOffset.UtcNow;
@@ -54,8 +60,8 @@ public sealed class SecurityReportMetrics
     public int Agents { get; set; }
     public int OnlineAgents { get; set; }
     public int Assets { get; set; }
-    public int ThreatEvents { get; set; }
-    public int Incidents { get; set; }
+    public long ThreatEvents { get; set; }
+    public long Incidents { get; set; }
     public int OpenIncidents { get; set; }
     public int ThreatCampaigns { get; set; }
     public int DefenseScore { get; set; }
@@ -64,13 +70,19 @@ public sealed class SecurityReportMetrics
 /// <summary>Exact tenant totals used by report summaries; detail rows may still be sampled.</summary>
 public sealed class TenantReportAggregate
 {
-    public int ThreatEvents { get; set; }
-    public int Incidents { get; set; }
+    public long ThreatEvents { get; set; }
+    public long Incidents { get; set; }
     public int OpenIncidents { get; set; }
     public int CriticalIncidents { get; set; }
     public int HighIncidents { get; set; }
     public int MediumIncidents { get; set; }
     public int LowIncidents { get; set; }
+    public int CriticalOpenIncidents { get; set; }
+    public int HighOpenIncidents { get; set; }
+    /// <summary>Distinct open-incident endpoints, preferring agent id then host then IP.</summary>
+    public int AffectedAssets { get; set; }
+    public DateTimeOffset? LatestEventAtUtc { get; set; }
+    public DateTimeOffset? LatestConnectionAtUtc { get; set; }
 }
 
 public sealed class SecurityReportCountItem

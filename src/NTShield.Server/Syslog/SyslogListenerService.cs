@@ -114,15 +114,16 @@ public sealed class SyslogListenerService : BackgroundService
                     var alert = OpenSourceSignatureEngine.ToAlert(hit);
                     batch.Alerts.Add(alert);
                     var incident = OpenSourceSignatureEngine.ToIncident(hit);
-                    await _store.UpsertIncidentAsync(incident);
-                    _lateral.IngestIncidents([incident]);
+                    incident.TenantId = "default";
+                    await _store.UpsertIncidentAsync(incident, "default");
+                    _lateral.IngestIncidents([incident], "default");
                     _logger.LogWarning(
                         "SYSLOG SIG {Id} {Name} host={Host} from={Ip} sev={Sev}",
                         hit.Signature.Id, hit.Signature.Name, parsed.Host, parsed.SourceIp, hit.Signature.Severity);
                 }
             }
 
-            await _store.SaveBatchAsync(batch);
+            await _store.SaveBatchAsync(batch, "default");
         }
         catch (Exception ex)
         {

@@ -94,6 +94,39 @@ public class LateralMovementTrackerTests
     }
 
     [Fact]
+    public void Campaigns_With_The_Same_Path_And_Time_Are_Partitioned_By_Tenant()
+    {
+        var tracker = CreateTracker();
+        var timestamp = new DateTimeOffset(2026, 8, 8, 12, 0, 0, TimeSpan.Zero);
+        Incident IncidentFor(string id) => new()
+        {
+            IncidentId = id,
+            RuleId = "NETWORK_LOGON_BURST",
+            Title = "Same network path",
+            Severity = Severity.High,
+            SourceAgentId = "shared-agent-id",
+            SourceIp = "10.0.0.10",
+            DestinationIp = "10.0.0.20",
+            LastSeen = timestamp
+        };
+
+        var alpha = Assert.Single(tracker.IngestIncidents([IncidentFor("same-id")], "alpha"));
+        var beta = Assert.Single(tracker.IngestIncidents([IncidentFor("same-id")], "beta"));
+
+        Assert.NotEqual(alpha.CampaignId, beta.CampaignId);
+        Assert.Equal("alpha", alpha.TenantId);
+        Assert.Equal("beta", beta.TenantId);
+        Assert.Single(tracker.ListCampaigns(10, "alpha"));
+        Assert.Single(tracker.ListCampaigns(10, "beta"));
+        Assert.Empty(tracker.FindByHostOrIp("10.0.0.20", "other"));
+
+        Assert.Equal(1, tracker.ApplyAnomaly(
+            "shared-agent-id", .8, .7, 12, "test", timestamp, tenantId: "alpha"));
+        Assert.NotNull(tracker.GetCampaign(alpha.CampaignId, "alpha")?.MlScore);
+        Assert.Null(tracker.GetCampaign(beta.CampaignId, "beta")?.MlScore);
+    }
+
+    [Fact]
     public async Task Detection_Alert_Becomes_Incident_With_ML_Features()
     {
         var correlator = new CrossHostCorrelator(
@@ -231,19 +264,35 @@ public class LateralMovementTrackerTests
         public Task InitializeAsync() => Task.CompletedTask;
         public Task RegisterAgentAsync(AgentRegistrationRequest req) => Task.CompletedTask;
         public Task UpsertAgentAsync(AgentHeartbeat hb) => Task.CompletedTask;
-        public Task<bool> HasIdempotencyKeyAsync(string key) => Task.FromResult(false);
-        public Task SaveIdempotencyKeyAsync(string key) => Task.CompletedTask;
-        public Task SaveBatchAsync(AgentIngestBatch batch) => Task.CompletedTask;
+        public Task<IngestIdempotencyClaimState> TryClaimIngestIdempotencyAsync(
+            string tenantId, string agentId, string keyHash, string leaseOwner,
+            DateTimeOffset nowUtc, DateTimeOffset leaseUntilUtc,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(IngestIdempotencyClaimState.Acquired);
+        public Task<bool> RenewIngestIdempotencyClaimAsync(
+            string tenantId, string agentId, string keyHash, string leaseOwner,
+            DateTimeOffset nowUtc, DateTimeOffset leaseUntilUtc,
+            CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public Task<bool> CompleteIngestIdempotencyClaimAsync(
+            string tenantId, string agentId, string keyHash, string leaseOwner,
+            DateTimeOffset completedAtUtc,
+            CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public Task ReleaseIngestIdempotencyClaimAsync(
+            string tenantId, string agentId, string keyHash, string leaseOwner,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task SaveBatchAsync(AgentIngestBatch batch, string tenantId = "default") => Task.CompletedTask;
         public Task<IReadOnlyList<SecurityEventRecord>> ListSecurityEventsAsync(int take, string? tenantId = null, DateTimeOffset? fromUtc = null, DateTimeOffset? toUtc = null) =>
             Task.FromResult<IReadOnlyList<SecurityEventRecord>>(Array.Empty<SecurityEventRecord>());
-        public Task UpsertIncidentAsync(Incident incident) => Task.CompletedTask;
+        public Task UpsertIncidentAsync(Incident incident, string tenantId = "default") => Task.CompletedTask;
         public Task<IReadOnlyList<Incident>> ListIncidentsAsync(int take, string? tenantId = null, DateTimeOffset? fromUtc = null, DateTimeOffset? toUtc = null) => Task.FromResult<IReadOnlyList<Incident>>(Array.Empty<Incident>());
         public Task<long> CountIncidentsAsync(string? tenantId = null, DateTimeOffset? fromUtc = null, DateTimeOffset? toUtc = null) => Task.FromResult(0L);
         public Task<TenantReportAggregate> GetReportAggregateAsync(string tenantId, DateTimeOffset fromUtc, DateTimeOffset toUtc) =>
             Task.FromResult(new TenantReportAggregate());
+        public Task<TenantReportAggregate> GetDashboardOverviewAggregateAsync(string tenantId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new TenantReportAggregate());
         public Task<Incident?> GetIncidentAsync(string id, string? tenantId = null) => Task.FromResult<Incident?>(null);
         public Task<IReadOnlyList<object>> ListAgentsAsync(string? tenantId = null) => Task.FromResult<IReadOnlyList<object>>(Array.Empty<object>());
-        public Task<IReadOnlyList<NetworkConnectionRecord>> FindOutboundAsync(string remoteIp, int? remotePort, DateTimeOffset from, DateTimeOffset to) =>
+        public Task<IReadOnlyList<NetworkConnectionRecord>> FindOutboundAsync(string remoteIp, int? remotePort, DateTimeOffset from, DateTimeOffset to, string? tenantId = null) =>
             Task.FromResult<IReadOnlyList<NetworkConnectionRecord>>(Array.Empty<NetworkConnectionRecord>());
         public Task SavePendingActionAsync(ResponseActionRequest request, string agentKey) => Task.CompletedTask;
         public Task<List<ResponseActionRequest>> TakePendingActionsAsync(string agentId) => Task.FromResult(new List<ResponseActionRequest>());
@@ -251,6 +300,31 @@ public class LateralMovementTrackerTests
         public Task UpsertCampaignJsonAsync(string campaignId, string json) => Task.CompletedTask;
         public Task<IReadOnlyList<(string Id, string Json)>> ListCampaignJsonAsync(int take) =>
             Task.FromResult<IReadOnlyList<(string, string)>>(Array.Empty<(string, string)>());
+        public Task<IReadOnlyList<(string Id, string Json)>> ListCampaignJsonPageAsync(string? afterCampaignId, int take, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<(string, string)>>(Array.Empty<(string, string)>());
+        public Task UpsertThreatCampaignV2SummaryAsync(ThreatCampaignV2Summary summary, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<ThreatCampaignV2Summary?> GetThreatCampaignV2SummaryAsync(string tenantId, string campaignId, CancellationToken cancellationToken = default) => Task.FromResult<ThreatCampaignV2Summary?>(null);
+        public Task<IReadOnlyList<ThreatCampaignV2Summary>> ListThreatCampaignV2SummariesAsync(string tenantId, DateTimeOffset watermarkUtc, DateTimeOffset? fromObservedAtUtc, DateTimeOffset? toObservedAtUtc, string? status, string? severity, DateTimeOffset? afterLastObservedAtUtc, string? afterCampaignId, int take, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ThreatCampaignV2Summary>>([]);
+        public Task<long> CountActiveThreatCampaignsAsync(string tenantId, DateTimeOffset? fromObservedAtUtc = null, DateTimeOffset? toObservedAtUtc = null, CancellationToken cancellationToken = default) => Task.FromResult(0L);
+        public Task<bool> TryAppendThreatObservationAsync(ThreatObservation observation, CancellationToken cancellationToken = default) => Task.FromResult(false);
+        public Task<bool> TryAppendThreatCandidateObservationAsync(ThreatObservation observation, CancellationToken cancellationToken = default) => Task.FromResult(false);
+        public Task<IReadOnlyList<ThreatObservation>> ListThreatCandidateObservationsAsync(string tenantId, string contactId, DateTimeOffset fromObservedAtUtc, DateTimeOffset toObservedAtUtc, int take, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ThreatObservation>>([]);
+        public Task<IReadOnlyList<ThreatObservation>> ListThreatCandidateContextObservationsAsync(string tenantId, string firstNodeId, string secondNodeId, DateTimeOffset fromObservedAtUtc, DateTimeOffset toObservedAtUtc, int take, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ThreatObservation>>([]);
+        public Task UpsertThreatObservationMembershipAsync(ThreatObservationMembership membership, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task MarkThreatCampaignMergedAsync(string tenantId, string campaignId, string mergedIntoCampaignId, DateTimeOffset tombstonedAtUtc, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<IReadOnlyList<ThreatObservation>> ListThreatObservationsAsync(string tenantId, string campaignId, DateTimeOffset watermarkUtc, DateTimeOffset? fromObservedAtUtc, DateTimeOffset? toObservedAtUtc, DateTimeOffset? afterObservedAtUtc, string? afterObservationId, int take, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ThreatObservation>>([]);
+        public Task<long> CountThreatObservationsAsync(string tenantId, string campaignId, DateTimeOffset watermarkUtc, DateTimeOffset? fromObservedAtUtc = null, DateTimeOffset? toObservedAtUtc = null, CancellationToken cancellationToken = default) => Task.FromResult(0L);
+        public Task<long> CountThreatObservationDetailsAsync(string tenantId, string campaignId, DateTimeOffset watermarkUtc, DateTimeOffset? fromObservedAtUtc = null, DateTimeOffset? toObservedAtUtc = null, CancellationToken cancellationToken = default) => Task.FromResult(0L);
+        public Task<IReadOnlyList<ThreatTimelineBucket>> ListThreatTimelineBucketsAsync(string tenantId, string campaignId, DateTimeOffset watermarkUtc, DateTimeOffset? fromObservedAtUtc, DateTimeOffset? toObservedAtUtc, int resolutionSeconds, DateTimeOffset? afterBucketStartUtc, int take, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ThreatTimelineBucket>>([]);
+        public Task<IReadOnlyList<ThreatContactAggregate>> ListThreatContactsAsync(string tenantId, string campaignId, DateTimeOffset watermarkUtc, DateTimeOffset? fromObservedAtUtc, DateTimeOffset? toObservedAtUtc, DateTimeOffset? afterLastObservedAtUtc, string? afterContactId, int take, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ThreatContactAggregate>>([]);
+        public Task<long> CountThreatContactsAsync(string tenantId, string campaignId, DateTimeOffset watermarkUtc, DateTimeOffset? fromObservedAtUtc = null, DateTimeOffset? toObservedAtUtc = null, CancellationToken cancellationToken = default) => Task.FromResult(0L);
+        public Task EnqueueTemporalCorrelationWorkAsync(TemporalCorrelationWorkItem item, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<IReadOnlyList<TemporalCorrelationWorkItem>> LeaseTemporalCorrelationWorkAsync(string leaseOwner, DateTimeOffset nowUtc, TimeSpan leaseDuration, int take, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<TemporalCorrelationWorkItem>>([]);
+        public Task CompleteTemporalCorrelationWorkAsync(string workId, string leaseOwner, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task FailTemporalCorrelationWorkAsync(string workId, string leaseOwner, DateTimeOffset retryAtUtc, string error, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<int> SweepTemporalThreatDataAsync(DateTimeOffset detailBeforeUtc, DateTimeOffset aggregateBeforeUtc, CancellationToken cancellationToken = default) => Task.FromResult(0);
+        public Task<string?> GetTemporalBackfillCursorAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+        public Task SaveTemporalBackfillCursorAsync(string? campaignId, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task AppendAuditAsync(string actor, string action, string? target, string result, string? detailJson, string? sourceIp) => Task.CompletedTask;
         public Task<IReadOnlyList<AuditLogEntry>> ListAuditAsync(int take) => Task.FromResult<IReadOnlyList<AuditLogEntry>>(Array.Empty<AuditLogEntry>());
         public Task<AgentPolicy> GetActivePolicyAsync(string? agentId = null) => Task.FromResult(new AgentPolicy());
@@ -274,6 +348,16 @@ public class LateralMovementTrackerTests
             Task.FromResult<IReadOnlyList<SecurityReportRecord>>(Array.Empty<SecurityReportRecord>());
         public Task<SecurityReportRecord?> GetReportAsync(string tenantId, string reportId) => Task.FromResult<SecurityReportRecord?>(null);
         public Task UpsertReportAsync(SecurityReportRecord report) => Task.CompletedTask;
+        public Task<IReadOnlyList<ReportTemplateDefinition>> ListReportTemplatesAsync(string tenantId) =>
+            Task.FromResult<IReadOnlyList<ReportTemplateDefinition>>(Array.Empty<ReportTemplateDefinition>());
+        public Task<ReportTemplateDefinition?> GetReportTemplateAsync(string tenantId, string templateId) =>
+            Task.FromResult<ReportTemplateDefinition?>(null);
+        public Task UpsertReportTemplateAsync(string tenantId, ReportTemplateDefinition template) => Task.CompletedTask;
+        public Task<bool> TryUpdateReportTemplateAsync(
+            string tenantId,
+            ReportTemplateDefinition template,
+            int expectedVersion) => Task.FromResult(false);
+        public Task<bool> DeleteReportTemplateAsync(string tenantId, string templateId) => Task.FromResult(false);
         public Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId) =>
             Task.FromResult<IReadOnlyList<TenantAsset>>(Array.Empty<TenantAsset>());
         public Task<TenantAsset?> GetAssetAsync(string tenantId, string assetId) => Task.FromResult<TenantAsset?>(null);

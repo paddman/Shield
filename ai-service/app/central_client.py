@@ -16,7 +16,10 @@ class CherryCentralClient:
     async def get_incident(self, tenant: TenantContext, incident_id: str) -> IncidentInput:
         if not tenant.central_url:
             raise ValueError("tenant_has_no_central_url")
-        headers = {"Accept": "application/json"}
+        headers = {
+            "Accept": "application/json",
+            "X-NTShield-Tenant": tenant.tenant_id,
+        }
         if tenant.central_api_key:
             headers["X-NTShield-Api-Key"] = tenant.central_api_key
         timeout = httpx.Timeout(
@@ -37,7 +40,10 @@ class CherryCentralClient:
     async def list_incidents(self, tenant: TenantContext, take: int = 100) -> list[IncidentInput]:
         if not tenant.central_url:
             raise ValueError("tenant_has_no_central_url")
-        headers = {"Accept": "application/json"}
+        headers = {
+            "Accept": "application/json",
+            "X-NTShield-Tenant": tenant.tenant_id,
+        }
         if tenant.central_api_key:
             headers["X-NTShield-Api-Key"] = tenant.central_api_key
         timeout = httpx.Timeout(

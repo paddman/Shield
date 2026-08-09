@@ -7,13 +7,15 @@ using NTShield.Shared.Models;
 namespace NTShield.Server.Data;
 
 /// <summary>
-/// ClickHouse analytics sink with SQLite retained for the transactional control plane.
+/// ClickHouse analytics sink with a transactional PostgreSQL or SQLite control plane.
 /// ClickHouse is append/merge oriented; API keys, policies and pending actions therefore
-/// remain in SQLite while telemetry, incidents, alerts and metrics are written to ClickHouse.
+/// remain in the configured control store while telemetry, incidents, alerts and metrics
+/// are written to ClickHouse. PostgreSQL is required for production multi-node operation;
+/// SQLite remains available for a single-node lab.
 /// </summary>
-public sealed class ClickHouseStore : ICentralStore
+public sealed partial class ClickHouseStore : ICentralStore
 {
-    private readonly SqliteCentralStore _control;
+    private readonly ICentralStore _control;
     private readonly ClickHouseOptions _options;
     private readonly ILogger<ClickHouseStore> _logger;
     private readonly ClickHouseClient _client;
@@ -21,12 +23,19 @@ public sealed class ClickHouseStore : ICentralStore
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public ClickHouseStore(
-        SqliteCentralStore control,
+        SqliteCentralStore sqliteControl,
+        PostgresStore postgresControl,
         IOptions<ClickHouseOptions> options,
         ILogger<ClickHouseStore> logger)
     {
-        _control = control;
         _options = options.Value;
+        _control = _options.ControlProvider.Trim().ToLowerInvariant() switch
+        {
+            "postgres" or "postgresql" => postgresControl,
+            "sqlite" or "sqlite-lab" => sqliteControl,
+            _ => throw new InvalidOperationException(
+                "ClickHouse:ControlProvider must be 'Postgres' or 'Sqlite'.")
+        };
         _logger = logger;
         _client = new ClickHouseClient(_options.ConnectionString);
         var database = string.IsNullOrWhiteSpace(_options.Database) ? "ntshield" : _options.Database;
@@ -46,11 +55,14 @@ public sealed class ClickHouseStore : ICentralStore
                     event_type LowCardinality(String),
                     entity_id String,
                     agent_id String,
+                    tenant_id LowCardinality(String) DEFAULT 'default',
                     payload String
                 ) ENGINE = MergeTree
                 PARTITION BY toYYYYMM(event_time)
                 ORDER BY (event_type, agent_id, event_time, entity_id)
                 """);
+            await _client.ExecuteNonQueryAsync(
+                $"ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS tenant_id LowCardinality(String) DEFAULT 'default'");
             _logger.LogInformation("ClickHouse analytics store ready at {Database}.{Table}", database, "events");
         }
         catch (Exception ex)
@@ -63,7 +75,8 @@ public sealed class ClickHouseStore : ICentralStore
     public async Task RegisterAgentAsync(AgentRegistrationRequest req)
     {
         await _control.RegisterAgentAsync(req);
-        await WriteAsync("agent_registration", req.AgentId, DateTimeOffset.UtcNow, req.AgentId, req);
+        await WriteAsync("agent_registration", req.AgentId, DateTimeOffset.UtcNow, req.AgentId, req,
+            req.TenantId ?? "default");
     }
 
     public async Task UpsertAgentAsync(AgentHeartbeat hb)
@@ -72,38 +85,81 @@ public sealed class ClickHouseStore : ICentralStore
         await WriteAsync("agent_heartbeat", hb.AgentId, hb.TimestampUtc, hb.AgentId, hb);
     }
 
-    public Task<bool> HasIdempotencyKeyAsync(string key) => _control.HasIdempotencyKeyAsync(key);
+    public Task<IngestIdempotencyClaimState> TryClaimIngestIdempotencyAsync(
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner,
+        DateTimeOffset nowUtc,
+        DateTimeOffset leaseUntilUtc,
+        CancellationToken cancellationToken = default) =>
+        _control.TryClaimIngestIdempotencyAsync(
+            tenantId, agentId, keyHash, leaseOwner, nowUtc, leaseUntilUtc, cancellationToken);
 
-    public Task SaveIdempotencyKeyAsync(string key) => _control.SaveIdempotencyKeyAsync(key);
+    public Task<bool> RenewIngestIdempotencyClaimAsync(
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner,
+        DateTimeOffset nowUtc,
+        DateTimeOffset leaseUntilUtc,
+        CancellationToken cancellationToken = default) =>
+        _control.RenewIngestIdempotencyClaimAsync(
+            tenantId, agentId, keyHash, leaseOwner, nowUtc, leaseUntilUtc, cancellationToken);
 
-    public async Task SaveBatchAsync(AgentIngestBatch batch)
+    public Task<bool> CompleteIngestIdempotencyClaimAsync(
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner,
+        DateTimeOffset completedAtUtc,
+        CancellationToken cancellationToken = default) =>
+        _control.CompleteIngestIdempotencyClaimAsync(
+            tenantId, agentId, keyHash, leaseOwner, completedAtUtc, cancellationToken);
+
+    public Task ReleaseIngestIdempotencyClaimAsync(
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner,
+        CancellationToken cancellationToken = default) =>
+        _control.ReleaseIngestIdempotencyClaimAsync(
+            tenantId, agentId, keyHash, leaseOwner, cancellationToken);
+
+    public async Task SaveBatchAsync(AgentIngestBatch batch, string tenantId = "default")
     {
-        await _control.SaveBatchAsync(batch);
+        tenantId = NormalizeTenantId(tenantId);
+        await _control.SaveBatchAsync(batch, tenantId);
         var rows = new List<object[]>();
         foreach (var item in batch.SecurityEvents)
         {
+            item.TenantId = tenantId;
             rows.Add(Row("security_event", $"{batch.AgentId}:{item.EventRecordId}:{item.TimestampUtc.Ticks}",
-                item.TimestampUtc, batch.AgentId, item));
+                item.TimestampUtc, batch.AgentId, item, tenantId));
         }
 
         foreach (var item in batch.NetworkConnections)
         {
+            item.TenantId = tenantId;
             rows.Add(Row("network_connection", $"{batch.AgentId}:{item.TimestampUtc.Ticks}:{item.RemoteAddress}:{item.RemotePort}",
-                item.TimestampUtc, batch.AgentId, item));
+                item.TimestampUtc, batch.AgentId, item, tenantId));
         }
 
         foreach (var item in batch.Alerts)
         {
-            rows.Add(Row("detection_alert", item.AlertId, item.TimestampUtc, batch.AgentId, item));
+            item.TenantId = tenantId;
+            rows.Add(Row("detection_alert", item.AlertId, item.TimestampUtc, batch.AgentId, item, tenantId));
         }
 
         await InsertRowsAsync(rows);
     }
 
-    public async Task UpsertIncidentAsync(Incident incident)
+    public async Task UpsertIncidentAsync(Incident incident, string tenantId = "default")
     {
-        await _control.UpsertIncidentAsync(incident);
-        await WriteAsync("incident", incident.IncidentId, incident.LastSeenUtc, incident.SourceAgentId ?? "", incident);
+        tenantId = NormalizeTenantId(tenantId);
+        incident.TenantId = tenantId;
+        await _control.UpsertIncidentAsync(incident, tenantId);
+        await WriteAsync("incident", incident.IncidentId, incident.LastSeenUtc, incident.SourceAgentId ?? "", incident, tenantId);
     }
 
     public Task<IReadOnlyList<SecurityEventRecord>> ListSecurityEventsAsync(
@@ -132,6 +188,14 @@ public sealed class ClickHouseStore : ICentralStore
         DateTimeOffset toUtc) =>
         _control.GetReportAggregateAsync(tenantId, fromUtc, toUtc);
 
+    public Task<TenantReportAggregate> GetDashboardOverviewAggregateAsync(
+        string tenantId,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc,
+        CancellationToken cancellationToken = default) =>
+        _control.GetDashboardOverviewAggregateAsync(
+            tenantId, fromUtc, toUtc, cancellationToken);
+
     public Task<Incident?> GetIncidentAsync(string id, string? tenantId = null) =>
         _control.GetIncidentAsync(id, tenantId);
 
@@ -139,8 +203,8 @@ public sealed class ClickHouseStore : ICentralStore
         _control.ListAgentsAsync(tenantId);
 
     public Task<IReadOnlyList<NetworkConnectionRecord>> FindOutboundAsync(
-        string remoteIp, int? remotePort, DateTimeOffset from, DateTimeOffset to) =>
-        _control.FindOutboundAsync(remoteIp, remotePort, from, to);
+        string remoteIp, int? remotePort, DateTimeOffset from, DateTimeOffset to, string? tenantId = null) =>
+        _control.FindOutboundAsync(remoteIp, remotePort, from, to, tenantId);
 
     public Task SavePendingActionAsync(ResponseActionRequest request, string agentKey) =>
         _control.SavePendingActionAsync(request, agentKey);
@@ -154,11 +218,26 @@ public sealed class ClickHouseStore : ICentralStore
     public async Task UpsertCampaignJsonAsync(string campaignId, string json)
     {
         await _control.UpsertCampaignJsonAsync(campaignId, json);
-        await WriteAsync("threat_campaign", campaignId, DateTimeOffset.UtcNow, "", json);
+        var tenantId = "default";
+        try
+        {
+            tenantId = NormalizeTenantId(JsonSerializer.Deserialize<ThreatCampaign>(json, JsonOptions)?.TenantId);
+        }
+        catch (JsonException)
+        {
+            // Preserve legacy/unknown campaign payloads in the default analytics partition.
+        }
+        await WriteAsync("threat_campaign", campaignId, DateTimeOffset.UtcNow, "", json, tenantId);
     }
 
     public Task<IReadOnlyList<(string Id, string Json)>> ListCampaignJsonAsync(int take) =>
         _control.ListCampaignJsonAsync(take);
+
+    public Task<IReadOnlyList<(string Id, string Json)>> ListCampaignJsonPageAsync(
+        string? afterCampaignId,
+        int take,
+        CancellationToken cancellationToken = default) =>
+        _control.ListCampaignJsonPageAsync(afterCampaignId, take, cancellationToken);
 
     public async Task AppendAuditAsync(string actor, string action, string? target, string result, string? detailJson, string? sourceIp)
     {
@@ -224,6 +303,24 @@ public sealed class ClickHouseStore : ICentralStore
 
     public Task UpsertReportAsync(SecurityReportRecord report) => _control.UpsertReportAsync(report);
 
+    public Task<IReadOnlyList<ReportTemplateDefinition>> ListReportTemplatesAsync(string tenantId) =>
+        _control.ListReportTemplatesAsync(tenantId);
+
+    public Task<ReportTemplateDefinition?> GetReportTemplateAsync(string tenantId, string templateId) =>
+        _control.GetReportTemplateAsync(tenantId, templateId);
+
+    public Task UpsertReportTemplateAsync(string tenantId, ReportTemplateDefinition template) =>
+        _control.UpsertReportTemplateAsync(tenantId, template);
+
+    public Task<bool> TryUpdateReportTemplateAsync(
+        string tenantId,
+        ReportTemplateDefinition template,
+        int expectedVersion) =>
+        _control.TryUpdateReportTemplateAsync(tenantId, template, expectedVersion);
+
+    public Task<bool> DeleteReportTemplateAsync(string tenantId, string templateId) =>
+        _control.DeleteReportTemplateAsync(tenantId, templateId);
+
     // Topology, asset and workflow graphs are transactional control-plane data;
     // keep them in the SQLite control store when ClickHouse is enabled.
     public Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId) => _control.ListAssetsAsync(tenantId);
@@ -261,9 +358,15 @@ public sealed class ClickHouseStore : ICentralStore
     public Task<bool> DeleteWorkflowAsync(string tenantId, string workflowId) =>
         _control.DeleteWorkflowAsync(tenantId, workflowId);
 
-    private async Task WriteAsync(string type, string entityId, DateTimeOffset timestamp, string agentId, object payload)
+    private async Task WriteAsync(
+        string type,
+        string entityId,
+        DateTimeOffset timestamp,
+        string agentId,
+        object payload,
+        string tenantId = "default")
     {
-        await InsertRowsAsync([Row(type, entityId, timestamp, agentId, payload)]);
+        await InsertRowsAsync([Row(type, entityId, timestamp, agentId, payload, NormalizeTenantId(tenantId))]);
     }
 
     private async Task InsertRowsAsync(IReadOnlyList<object[]> rows)
@@ -272,7 +375,7 @@ public sealed class ClickHouseStore : ICentralStore
         try
         {
             await _client.InsertBinaryAsync(_table,
-                ["event_time", "event_type", "entity_id", "agent_id", "payload"], rows);
+                ["event_time", "event_type", "entity_id", "agent_id", "tenant_id", "payload"], rows);
         }
         catch (Exception ex)
         {
@@ -281,15 +384,25 @@ public sealed class ClickHouseStore : ICentralStore
         }
     }
 
-    private static object[] Row(string type, string entityId, DateTimeOffset timestamp, string agentId, object payload) =>
+    private static object[] Row(
+        string type,
+        string entityId,
+        DateTimeOffset timestamp,
+        string agentId,
+        object payload,
+        string tenantId = "default") =>
     [
         timestamp.UtcDateTime,
         type,
         entityId ?? string.Empty,
         agentId ?? string.Empty,
+        NormalizeTenantId(tenantId),
         JsonSerializer.Serialize(payload, JsonOptions)
     ];
 
     private static string QuoteIdentifier(string identifier) =>
         "`" + identifier.Replace("`", "``", StringComparison.Ordinal) + "`";
+
+    private static string NormalizeTenantId(string? tenantId) =>
+        string.IsNullOrWhiteSpace(tenantId) ? "default" : tenantId.Trim().ToLowerInvariant();
 }

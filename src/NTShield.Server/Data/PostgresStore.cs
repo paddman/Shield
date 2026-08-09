@@ -7,7 +7,7 @@ using Npgsql;
 
 namespace NTShield.Server.Data;
 
-public sealed class PostgresStore : ICentralStore
+public sealed partial class PostgresStore : ICentralStore
 {
     private readonly string _cs;
     private readonly ILogger<PostgresStore> _logger;
@@ -48,8 +48,24 @@ public sealed class PostgresStore : ICentralStore
                     created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
 
+                CREATE TABLE IF NOT EXISTS ingest_idempotency_claims (
+                    tenant_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    key_hash TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    lease_owner TEXT,
+                    lease_until_utc TIMESTAMPTZ,
+                    created_at_utc TIMESTAMPTZ NOT NULL,
+                    updated_at_utc TIMESTAMPTZ NOT NULL,
+                    completed_at_utc TIMESTAMPTZ,
+                    PRIMARY KEY (tenant_id, agent_id, key_hash)
+                );
+                CREATE INDEX IF NOT EXISTS ix_ingest_idempotency_lease
+                    ON ingest_idempotency_claims(status, lease_until_utc);
+
                 CREATE TABLE IF NOT EXISTS security_events (
                     id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     agent_id TEXT NOT NULL,
                     computer_name TEXT NOT NULL,
                     event_id INT NOT NULL,
@@ -74,6 +90,7 @@ public sealed class PostgresStore : ICentralStore
 
                 CREATE TABLE IF NOT EXISTS network_connections (
                     id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     agent_id TEXT NOT NULL,
                     computer_name TEXT NOT NULL,
                     timestamp_utc TIMESTAMPTZ NOT NULL,
@@ -97,6 +114,7 @@ public sealed class PostgresStore : ICentralStore
                 CREATE TABLE IF NOT EXISTS detection_alerts (
                     id BIGSERIAL PRIMARY KEY,
                     alert_id TEXT UNIQUE NOT NULL,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     agent_id TEXT NOT NULL,
                     computer_name TEXT NOT NULL,
                     rule_id TEXT NOT NULL,
@@ -110,6 +128,7 @@ public sealed class PostgresStore : ICentralStore
 
                 CREATE TABLE IF NOT EXISTS incidents (
                     incident_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     first_seen_utc TIMESTAMPTZ NOT NULL,
                     last_seen_utc TIMESTAMPTZ NOT NULL,
                     severity INT NOT NULL,
@@ -172,6 +191,19 @@ public sealed class PostgresStore : ICentralStore
                 );
                 CREATE INDEX IF NOT EXISTS ix_security_reports_tenant ON security_reports(tenant_id, generated_at_utc DESC);
 
+                CREATE TABLE IF NOT EXISTS report_templates (
+                    tenant_id TEXT NOT NULL,
+                    template_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    payload JSONB NOT NULL,
+                    created_at_utc TIMESTAMPTZ NOT NULL,
+                    updated_at_utc TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (tenant_id, template_id)
+                );
+                CREATE INDEX IF NOT EXISTS ix_report_templates_tenant_updated
+                    ON report_templates(tenant_id, updated_at_utc DESC);
+
                 CREATE TABLE IF NOT EXISTS tenant_assets (
                     asset_id TEXT PRIMARY KEY,
                     tenant_id TEXT NOT NULL,
@@ -222,6 +254,40 @@ public sealed class PostgresStore : ICentralStore
                 INSERT INTO tenant_agent_assignments(agent_id, tenant_id, assigned_at_utc)
                 SELECT agent_id, 'default', NOW() FROM agents
                 ON CONFLICT(agent_id) DO NOTHING;
+
+                ALTER TABLE security_events ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+                ALTER TABLE network_connections ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+                ALTER TABLE detection_alerts ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+                ALTER TABLE incidents ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+
+                UPDATE security_events e SET tenant_id=COALESCE(
+                    (SELECT tenant_id FROM tenant_agent_assignments taa WHERE taa.agent_id=e.agent_id), 'default')
+                WHERE e.tenant_id IS NULL;
+                UPDATE network_connections n SET tenant_id=COALESCE(
+                    (SELECT tenant_id FROM tenant_agent_assignments taa WHERE taa.agent_id=n.agent_id), 'default')
+                WHERE n.tenant_id IS NULL;
+                UPDATE detection_alerts a SET tenant_id=COALESCE(
+                    (SELECT tenant_id FROM tenant_agent_assignments taa WHERE taa.agent_id=a.agent_id), 'default')
+                WHERE a.tenant_id IS NULL;
+                UPDATE incidents i SET tenant_id=COALESCE(
+                    (SELECT tenant_id FROM tenant_agent_assignments taa
+                     WHERE taa.agent_id=i.source_agent_id OR taa.agent_id=i.destination_agent_id
+                     LIMIT 1), 'default')
+                WHERE i.tenant_id IS NULL;
+
+                ALTER TABLE security_events ALTER COLUMN tenant_id SET DEFAULT 'default';
+                ALTER TABLE network_connections ALTER COLUMN tenant_id SET DEFAULT 'default';
+                ALTER TABLE detection_alerts ALTER COLUMN tenant_id SET DEFAULT 'default';
+                ALTER TABLE incidents ALTER COLUMN tenant_id SET DEFAULT 'default';
+                ALTER TABLE security_events ALTER COLUMN tenant_id SET NOT NULL;
+                ALTER TABLE network_connections ALTER COLUMN tenant_id SET NOT NULL;
+                ALTER TABLE detection_alerts ALTER COLUMN tenant_id SET NOT NULL;
+                ALTER TABLE incidents ALTER COLUMN tenant_id SET NOT NULL;
+                CREATE INDEX IF NOT EXISTS ix_sec_events_tenant_ts ON security_events(tenant_id, timestamp_utc DESC);
+                CREATE INDEX IF NOT EXISTS ix_net_tenant_remote ON network_connections(tenant_id, remote_address, timestamp_utc DESC);
+                CREATE INDEX IF NOT EXISTS ix_net_tenant_ts ON network_connections(tenant_id, timestamp_utc DESC);
+                CREATE INDEX IF NOT EXISTS ix_alerts_tenant_ts ON detection_alerts(tenant_id, timestamp_utc DESC);
+                CREATE INDEX IF NOT EXISTS ix_incidents_tenant_last ON incidents(tenant_id, last_seen_utc DESC);
                 """;
             await cmd.ExecuteNonQueryAsync();
             _logger.LogInformation("PostgreSQL schema ready");
@@ -306,52 +372,205 @@ public sealed class PostgresStore : ICentralStore
         await cmd.ExecuteNonQueryAsync();
     }
 
-    public async Task<bool> HasIdempotencyKeyAsync(string key)
+    public async Task<IngestIdempotencyClaimState> TryClaimIngestIdempotencyAsync(
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner,
+        DateTimeOffset nowUtc,
+        DateTimeOffset leaseUntilUtc,
+        CancellationToken cancellationToken = default)
     {
+        tenantId = NormalizeTenantId(tenantId);
+        agentId = NormalizeIdempotencyScope(agentId, "agent id");
+        keyHash = NormalizeIdempotencyScope(keyHash, "idempotency key hash");
+        leaseOwner = NormalizeIdempotencyScope(leaseOwner, "lease owner");
         await using var conn = new NpgsqlConnection(_cs);
-        await conn.OpenAsync();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT 1 FROM idempotency_keys WHERE key = @k LIMIT 1;";
-        cmd.Parameters.AddWithValue("k", key);
-        var result = await cmd.ExecuteScalarAsync();
-        return result is not null;
+        await conn.OpenAsync(cancellationToken);
+        await using var tx = await conn.BeginTransactionAsync(cancellationToken);
+        await using (var insert = conn.CreateCommand())
+        {
+            insert.Transaction = tx;
+            insert.CommandText =
+                """
+                INSERT INTO ingest_idempotency_claims(
+                    tenant_id, agent_id, key_hash, status, lease_owner,
+                    lease_until_utc, created_at_utc, updated_at_utc)
+                VALUES (@tenant, @agent, @key, 'processing', @owner, @lease, @now, @now)
+                ON CONFLICT (tenant_id, agent_id, key_hash) DO NOTHING;
+                """;
+            AddIngestIdempotencyParameters(insert, tenantId, agentId, keyHash, leaseOwner);
+            insert.Parameters.AddWithValue("lease", leaseUntilUtc.ToUniversalTime());
+            insert.Parameters.AddWithValue("now", nowUtc.ToUniversalTime());
+            if (await insert.ExecuteNonQueryAsync(cancellationToken) == 1)
+            {
+                await tx.CommitAsync(cancellationToken);
+                return IngestIdempotencyClaimState.Acquired;
+            }
+        }
+
+        await using (var reclaim = conn.CreateCommand())
+        {
+            reclaim.Transaction = tx;
+            reclaim.CommandText =
+                """
+                UPDATE ingest_idempotency_claims SET
+                    status='processing', lease_owner=@owner, lease_until_utc=@lease,
+                    updated_at_utc=@now, completed_at_utc=NULL
+                WHERE tenant_id=@tenant AND agent_id=@agent AND key_hash=@key
+                  AND status='processing'
+                  AND (lease_until_utc IS NULL OR lease_until_utc <= @now);
+                """;
+            AddIngestIdempotencyParameters(reclaim, tenantId, agentId, keyHash, leaseOwner);
+            reclaim.Parameters.AddWithValue("lease", leaseUntilUtc.ToUniversalTime());
+            reclaim.Parameters.AddWithValue("now", nowUtc.ToUniversalTime());
+            if (await reclaim.ExecuteNonQueryAsync(cancellationToken) == 1)
+            {
+                await tx.CommitAsync(cancellationToken);
+                return IngestIdempotencyClaimState.Acquired;
+            }
+        }
+
+        string? status;
+        await using (var read = conn.CreateCommand())
+        {
+            read.Transaction = tx;
+            read.CommandText =
+                """
+                SELECT status FROM ingest_idempotency_claims
+                WHERE tenant_id=@tenant AND agent_id=@agent AND key_hash=@key LIMIT 1;
+                """;
+            AddIngestIdempotencyParameters(read, tenantId, agentId, keyHash, leaseOwner);
+            status = (string?)await read.ExecuteScalarAsync(cancellationToken);
+        }
+        await tx.CommitAsync(cancellationToken);
+        return string.Equals(status, "completed", StringComparison.Ordinal)
+            ? IngestIdempotencyClaimState.Completed
+            : IngestIdempotencyClaimState.InProgress;
     }
 
-    public async Task SaveIdempotencyKeyAsync(string key)
+    public async Task<bool> RenewIngestIdempotencyClaimAsync(
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner,
+        DateTimeOffset nowUtc,
+        DateTimeOffset leaseUntilUtc,
+        CancellationToken cancellationToken = default)
     {
         await using var conn = new NpgsqlConnection(_cs);
-        await conn.OpenAsync();
+        await conn.OpenAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText =
             """
-            INSERT INTO idempotency_keys(key, created_at_utc) VALUES (@k, NOW())
-            ON CONFLICT (key) DO NOTHING;
+            UPDATE ingest_idempotency_claims SET lease_until_utc=@lease, updated_at_utc=@now
+            WHERE tenant_id=@tenant AND agent_id=@agent AND key_hash=@key
+              AND status='processing' AND lease_owner=@owner AND lease_until_utc > @now;
             """;
-        cmd.Parameters.AddWithValue("k", key);
-        await cmd.ExecuteNonQueryAsync();
+        AddIngestIdempotencyParameters(cmd, NormalizeTenantId(tenantId),
+            NormalizeIdempotencyScope(agentId, "agent id"),
+            NormalizeIdempotencyScope(keyHash, "idempotency key hash"),
+            NormalizeIdempotencyScope(leaseOwner, "lease owner"));
+        cmd.Parameters.AddWithValue("lease", leaseUntilUtc.ToUniversalTime());
+        cmd.Parameters.AddWithValue("now", nowUtc.ToUniversalTime());
+        return await cmd.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
-    public async Task SaveBatchAsync(AgentIngestBatch batch)
+    public async Task<bool> CompleteIngestIdempotencyClaimAsync(
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner,
+        DateTimeOffset completedAtUtc,
+        CancellationToken cancellationToken = default)
     {
+        await using var conn = new NpgsqlConnection(_cs);
+        await conn.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            """
+            UPDATE ingest_idempotency_claims SET
+                status='completed', lease_owner=NULL, lease_until_utc=NULL,
+                updated_at_utc=@completed, completed_at_utc=@completed
+            WHERE tenant_id=@tenant AND agent_id=@agent AND key_hash=@key
+              AND status='processing' AND lease_owner=@owner;
+            """;
+        AddIngestIdempotencyParameters(cmd, NormalizeTenantId(tenantId),
+            NormalizeIdempotencyScope(agentId, "agent id"),
+            NormalizeIdempotencyScope(keyHash, "idempotency key hash"),
+            NormalizeIdempotencyScope(leaseOwner, "lease owner"));
+        cmd.Parameters.AddWithValue("completed", completedAtUtc.ToUniversalTime());
+        return await cmd.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task ReleaseIngestIdempotencyClaimAsync(
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner,
+        CancellationToken cancellationToken = default)
+    {
+        await using var conn = new NpgsqlConnection(_cs);
+        await conn.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            """
+            DELETE FROM ingest_idempotency_claims
+            WHERE tenant_id=@tenant AND agent_id=@agent AND key_hash=@key
+              AND status='processing' AND lease_owner=@owner;
+            """;
+        AddIngestIdempotencyParameters(cmd, NormalizeTenantId(tenantId),
+            NormalizeIdempotencyScope(agentId, "agent id"),
+            NormalizeIdempotencyScope(keyHash, "idempotency key hash"),
+            NormalizeIdempotencyScope(leaseOwner, "lease owner"));
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static void AddIngestIdempotencyParameters(
+        NpgsqlCommand command,
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner)
+    {
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("agent", agentId);
+        command.Parameters.AddWithValue("key", keyHash);
+        command.Parameters.AddWithValue("owner", leaseOwner);
+    }
+
+    private static string NormalizeIdempotencyScope(string value, string field)
+    {
+        value = value?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (value.Length is < 1 or > 256)
+            throw new ArgumentException($"Invalid {field}.", field);
+        return value;
+    }
+
+    public async Task SaveBatchAsync(AgentIngestBatch batch, string tenantId = "default")
+    {
+        tenantId = NormalizeTenantId(tenantId);
         await using var conn = new NpgsqlConnection(_cs);
         await conn.OpenAsync();
         await using var tx = await conn.BeginTransactionAsync();
 
         foreach (var e in batch.SecurityEvents)
         {
+            e.TenantId = tenantId;
             await using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
             cmd.CommandText =
                 """
                 INSERT INTO security_events(
-                    agent_id, computer_name, event_id, timestamp_utc, username, domain,
+                    tenant_id, agent_id, computer_name, event_id, timestamp_utc, username, domain,
                     source_ip, source_port, destination_ip, destination_port, logon_type,
                     process_id, process_path, status, raw_xml, event_record_id, payload)
                 VALUES (
-                    @agent_id, @computer_name, @event_id, @timestamp_utc, @username, @domain,
+                    @tenant_id, @agent_id, @computer_name, @event_id, @timestamp_utc, @username, @domain,
                     @source_ip, @source_port, @destination_ip, @destination_port, @logon_type,
                     @process_id, @process_path, @status, @raw_xml, @event_record_id, @payload::jsonb);
                 """;
+            cmd.Parameters.AddWithValue("tenant_id", tenantId);
             cmd.Parameters.AddWithValue("agent_id", e.AgentId);
             cmd.Parameters.AddWithValue("computer_name", e.ComputerName);
             cmd.Parameters.AddWithValue("event_id", e.EventId);
@@ -374,19 +593,21 @@ public sealed class PostgresStore : ICentralStore
 
         foreach (var n in batch.NetworkConnections)
         {
+            n.TenantId = tenantId;
             await using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
             cmd.CommandText =
                 """
                 INSERT INTO network_connections(
-                    agent_id, computer_name, timestamp_utc, protocol, local_address, local_port,
+                    tenant_id, agent_id, computer_name, timestamp_utc, protocol, local_address, local_port,
                     remote_address, remote_port, process_id, process_name, process_path,
                     process_command_line, service_names, is_new, is_closed, payload)
                 VALUES (
-                    @agent_id, @computer_name, @timestamp_utc, @protocol, @local_address, @local_port,
+                    @tenant_id, @agent_id, @computer_name, @timestamp_utc, @protocol, @local_address, @local_port,
                     @remote_address, @remote_port, @process_id, @process_name, @process_path,
                     @process_command_line, @service_names, @is_new, @is_closed, @payload::jsonb);
                 """;
+            cmd.Parameters.AddWithValue("tenant_id", tenantId);
             cmd.Parameters.AddWithValue("agent_id", n.AgentId);
             cmd.Parameters.AddWithValue("computer_name", n.ComputerName);
             cmd.Parameters.AddWithValue("timestamp_utc", n.TimestampUtc);
@@ -408,15 +629,17 @@ public sealed class PostgresStore : ICentralStore
 
         foreach (var a in batch.Alerts)
         {
+            a.TenantId = tenantId;
             await using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
             cmd.CommandText =
                 """
-                INSERT INTO detection_alerts(alert_id, agent_id, computer_name, rule_id, severity, timestamp_utc, source_ip, destination_ip, username, payload)
-                VALUES (@alert_id, @agent_id, @computer_name, @rule_id, @severity, @timestamp_utc, @source_ip, @destination_ip, @username, @payload::jsonb)
+                INSERT INTO detection_alerts(alert_id, tenant_id, agent_id, computer_name, rule_id, severity, timestamp_utc, source_ip, destination_ip, username, payload)
+                VALUES (@alert_id, @tenant_id, @agent_id, @computer_name, @rule_id, @severity, @timestamp_utc, @source_ip, @destination_ip, @username, @payload::jsonb)
                 ON CONFLICT (alert_id) DO NOTHING;
                 """;
             cmd.Parameters.AddWithValue("alert_id", a.AlertId);
+            cmd.Parameters.AddWithValue("tenant_id", tenantId);
             cmd.Parameters.AddWithValue("agent_id", a.AgentId);
             cmd.Parameters.AddWithValue("computer_name", a.ComputerName);
             cmd.Parameters.AddWithValue("rule_id", a.RuleId);
@@ -432,22 +655,24 @@ public sealed class PostgresStore : ICentralStore
         await tx.CommitAsync();
     }
 
-    public async Task UpsertIncidentAsync(Incident incident)
+    public async Task UpsertIncidentAsync(Incident incident, string tenantId = "default")
     {
+        tenantId = NormalizeTenantId(tenantId);
+        incident.TenantId = tenantId;
         await using var conn = new NpgsqlConnection(_cs);
         await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText =
             """
             INSERT INTO incidents(
-                incident_id, first_seen_utc, last_seen_utc, severity, title, description, correlation_key,
+                incident_id, tenant_id, first_seen_utc, last_seen_utc, severity, title, description, correlation_key,
                 source_host, source_agent_id, source_ip, source_port, source_process_id, source_process_name,
                 source_process_path, source_service_names, source_command_line,
                 destination_host, destination_agent_id, destination_ip, destination_port,
                 username, domain, logon_type, failed_logon_count, successful_logon_count, privileged_logon,
                 evidence_json, status)
             VALUES (
-                @incident_id, @first_seen_utc, @last_seen_utc, @severity, @title, @description, @correlation_key,
+                @incident_id, @tenant_id, @first_seen_utc, @last_seen_utc, @severity, @title, @description, @correlation_key,
                 @source_host, @source_agent_id, @source_ip, @source_port, @source_process_id, @source_process_name,
                 @source_process_path, @source_service_names, @source_command_line,
                 @destination_host, @destination_agent_id, @destination_ip, @destination_port,
@@ -463,9 +688,11 @@ public sealed class PostgresStore : ICentralStore
                 source_process_id = COALESCE(EXCLUDED.source_process_id, incidents.source_process_id),
                 source_process_name = COALESCE(EXCLUDED.source_process_name, incidents.source_process_name),
                 source_service_names = COALESCE(EXCLUDED.source_service_names, incidents.source_service_names),
-                destination_port = COALESCE(EXCLUDED.destination_port, incidents.destination_port);
+                destination_port = COALESCE(EXCLUDED.destination_port, incidents.destination_port)
+            WHERE incidents.tenant_id=EXCLUDED.tenant_id;
             """;
         cmd.Parameters.AddWithValue("incident_id", incident.IncidentId);
+        cmd.Parameters.AddWithValue("tenant_id", tenantId);
         cmd.Parameters.AddWithValue("first_seen_utc", incident.FirstSeenUtc == DateTimeOffset.MinValue ? DateTimeOffset.UtcNow : incident.FirstSeenUtc);
         cmd.Parameters.AddWithValue("last_seen_utc", incident.LastSeenUtc == DateTimeOffset.MinValue ? DateTimeOffset.UtcNow : incident.LastSeenUtc);
         cmd.Parameters.AddWithValue("severity", (int)incident.Severity);
@@ -495,7 +722,13 @@ public sealed class PostgresStore : ICentralStore
             ? JsonSerializer.Serialize(incident.EvidenceEvents)
             : incident.EvidenceJson);
         cmd.Parameters.AddWithValue("status", incident.Status);
-        await cmd.ExecuteNonQueryAsync();
+        var affected = await cmd.ExecuteNonQueryAsync();
+        if (affected == 0)
+        {
+            _logger.LogWarning(
+                "Ignored incident upsert because incident id {IncidentId} already belongs to another tenant",
+                incident.IncidentId);
+        }
     }
 
     public async Task<IReadOnlyList<SecurityEventRecord>> ListSecurityEventsAsync(
@@ -510,8 +743,8 @@ public sealed class PostgresStore : ICentralStore
         var filters = new List<string>();
         if (!string.IsNullOrWhiteSpace(tenantId))
         {
-            filters.Add("EXISTS (SELECT 1 FROM tenant_agent_assignments taa WHERE taa.agent_id=e.agent_id AND taa.tenant_id=@tenant)");
-            cmd.Parameters.AddWithValue("tenant", tenantId);
+            filters.Add("e.tenant_id=@tenant");
+            cmd.Parameters.AddWithValue("tenant", NormalizeTenantId(tenantId));
         }
         if (fromUtc is not null)
         {
@@ -528,7 +761,7 @@ public sealed class PostgresStore : ICentralStore
             $"""
             SELECT e.id, e.agent_id, e.computer_name, e.event_id, e.timestamp_utc, e.username, e.domain,
                    e.source_ip, e.source_port, e.destination_ip, e.destination_port, e.logon_type,
-                   e.process_id, e.process_path, e.status, e.raw_xml, e.event_record_id
+                   e.process_id, e.process_path, e.status, e.raw_xml, e.event_record_id, e.tenant_id
             FROM security_events e
             {where}
             ORDER BY e.timestamp_utc DESC
@@ -557,7 +790,8 @@ public sealed class PostgresStore : ICentralStore
                 ProcessPath = reader.IsDBNull(13) ? null : reader.GetString(13),
                 Status = reader.IsDBNull(14) ? null : reader.GetString(14),
                 RawXml = reader.IsDBNull(15) ? string.Empty : reader.GetString(15),
-                EventRecordId = reader.IsDBNull(16) ? 0 : reader.GetInt64(16)
+                EventRecordId = reader.IsDBNull(16) ? 0 : reader.GetInt64(16),
+                TenantId = reader.GetString(17)
             });
         }
 
@@ -576,19 +810,8 @@ public sealed class PostgresStore : ICentralStore
         var filters = new List<string>();
         if (!string.IsNullOrWhiteSpace(tenantId))
         {
-            filters.Add(
-                """
-                (
-                    EXISTS (
-                        SELECT 1 FROM tenant_agent_assignments taa
-                        WHERE taa.tenant_id=@tenant
-                          AND (taa.agent_id=i.source_agent_id OR taa.agent_id=i.destination_agent_id))
-                    OR (@tenant='default' AND NOT EXISTS (
-                        SELECT 1 FROM tenant_agent_assignments mapped
-                        WHERE mapped.agent_id=i.source_agent_id OR mapped.agent_id=i.destination_agent_id))
-                )
-                """);
-            cmd.Parameters.AddWithValue("tenant", tenantId);
+            filters.Add("i.tenant_id=@tenant");
+            cmd.Parameters.AddWithValue("tenant", NormalizeTenantId(tenantId));
         }
         if (fromUtc is not null)
         {
@@ -608,7 +831,7 @@ public sealed class PostgresStore : ICentralStore
                    source_process_path, source_service_names, source_command_line,
                    destination_host, destination_agent_id, destination_ip, destination_port,
                    username, domain, logon_type, failed_logon_count, successful_logon_count, privileged_logon,
-                   evidence_json, status
+                   evidence_json, status, i.tenant_id
             FROM incidents i
             {where}
             ORDER BY last_seen_utc DESC
@@ -636,19 +859,8 @@ public sealed class PostgresStore : ICentralStore
         var filters = new List<string>();
         if (!string.IsNullOrWhiteSpace(tenantId))
         {
-            filters.Add(
-                """
-                (
-                    EXISTS (
-                        SELECT 1 FROM tenant_agent_assignments taa
-                        WHERE taa.tenant_id=@tenant
-                          AND (taa.agent_id=i.source_agent_id OR taa.agent_id=i.destination_agent_id))
-                    OR (@tenant='default' AND NOT EXISTS (
-                        SELECT 1 FROM tenant_agent_assignments mapped
-                        WHERE mapped.agent_id=i.source_agent_id OR mapped.agent_id=i.destination_agent_id))
-                )
-                """);
-            cmd.Parameters.AddWithValue("tenant", tenantId);
+            filters.Add("i.tenant_id=@tenant");
+            cmd.Parameters.AddWithValue("tenant", NormalizeTenantId(tenantId));
         }
         if (fromUtc is not null)
         {
@@ -678,17 +890,41 @@ public sealed class PostgresStore : ICentralStore
         {
             eventCmd.CommandText =
                 """
-                SELECT COUNT(*)
+                SELECT COUNT(*), MAX(e.timestamp_utc)
                 FROM security_events e
                 WHERE e.timestamp_utc >= @from AND e.timestamp_utc <= @to
-                  AND EXISTS (
-                    SELECT 1 FROM tenant_agent_assignments taa
-                    WHERE taa.tenant_id=@tenant AND taa.agent_id=e.agent_id);
+                  AND e.tenant_id=@tenant;
                 """;
             eventCmd.Parameters.AddWithValue("tenant", tenantId);
             eventCmd.Parameters.AddWithValue("from", fromUtc.ToUniversalTime());
             eventCmd.Parameters.AddWithValue("to", toUtc.ToUniversalTime());
-            result.ThreatEvents = Convert.ToInt32(await eventCmd.ExecuteScalarAsync());
+            await using var eventReader = await eventCmd.ExecuteReaderAsync();
+            if (await eventReader.ReadAsync())
+            {
+                result.ThreatEvents = Convert.ToInt64(eventReader.GetValue(0));
+                result.LatestEventAtUtc = eventReader.IsDBNull(1)
+                    ? null
+                    : eventReader.GetFieldValue<DateTimeOffset>(1);
+            }
+        }
+
+        await using (var connectionCmd = conn.CreateCommand())
+        {
+            connectionCmd.CommandText =
+                """
+                SELECT MAX(n.timestamp_utc)
+                FROM network_connections n
+                WHERE n.timestamp_utc >= @from AND n.timestamp_utc <= @to
+                  AND n.tenant_id=@tenant;
+                """;
+            connectionCmd.Parameters.AddWithValue("tenant", tenantId);
+            connectionCmd.Parameters.AddWithValue("from", fromUtc.ToUniversalTime());
+            connectionCmd.Parameters.AddWithValue("to", toUtc.ToUniversalTime());
+            await using var connectionReader = await connectionCmd.ExecuteReaderAsync();
+            if (await connectionReader.ReadAsync())
+                result.LatestConnectionAtUtc = connectionReader.IsDBNull(0)
+                    ? null
+                    : connectionReader.GetFieldValue<DateTimeOffset>(0);
         }
 
         await using (var incidentCmd = conn.CreateCommand())
@@ -700,18 +936,12 @@ public sealed class PostgresStore : ICentralStore
                        COALESCE(SUM(CASE WHEN i.severity=4 THEN 1 ELSE 0 END),0),
                        COALESCE(SUM(CASE WHEN i.severity=3 THEN 1 ELSE 0 END),0),
                        COALESCE(SUM(CASE WHEN i.severity=2 THEN 1 ELSE 0 END),0),
-                       COALESCE(SUM(CASE WHEN i.severity=1 THEN 1 ELSE 0 END),0)
+                       COALESCE(SUM(CASE WHEN i.severity=1 THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=4 AND LOWER(COALESCE(i.status,'')) NOT IN ('closed','resolved') THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=3 AND LOWER(COALESCE(i.status,'')) NOT IN ('closed','resolved') THEN 1 ELSE 0 END),0)
                 FROM incidents i
                 WHERE i.last_seen_utc >= @from AND i.last_seen_utc <= @to
-                  AND (
-                    EXISTS (
-                        SELECT 1 FROM tenant_agent_assignments taa
-                        WHERE taa.tenant_id=@tenant
-                          AND (taa.agent_id=i.source_agent_id OR taa.agent_id=i.destination_agent_id))
-                    OR (@tenant='default' AND NOT EXISTS (
-                        SELECT 1 FROM tenant_agent_assignments mapped
-                        WHERE mapped.agent_id=i.source_agent_id OR mapped.agent_id=i.destination_agent_id))
-                  );
+                  AND i.tenant_id=@tenant;
                 """;
             incidentCmd.Parameters.AddWithValue("tenant", tenantId);
             incidentCmd.Parameters.AddWithValue("from", fromUtc.ToUniversalTime());
@@ -719,13 +949,144 @@ public sealed class PostgresStore : ICentralStore
             await using var reader = await incidentCmd.ExecuteReaderAsync();
             if (await reader.ReadAsync())
             {
-                result.Incidents = Convert.ToInt32(reader.GetValue(0));
+                result.Incidents = Convert.ToInt64(reader.GetValue(0));
                 result.OpenIncidents = Convert.ToInt32(reader.GetValue(1));
                 result.CriticalIncidents = Convert.ToInt32(reader.GetValue(2));
                 result.HighIncidents = Convert.ToInt32(reader.GetValue(3));
                 result.MediumIncidents = Convert.ToInt32(reader.GetValue(4));
                 result.LowIncidents = Convert.ToInt32(reader.GetValue(5));
+                result.CriticalOpenIncidents = Convert.ToInt32(reader.GetValue(6));
+                result.HighOpenIncidents = Convert.ToInt32(reader.GetValue(7));
             }
+        }
+
+        await using (var affectedCmd = conn.CreateCommand())
+        {
+            affectedCmd.CommandText =
+                """
+                SELECT COUNT(DISTINCT asset_key)
+                FROM (
+                    SELECT COALESCE(NULLIF(i.source_agent_id,''), NULLIF(i.source_host,''), NULLIF(i.source_ip,'')) AS asset_key
+                    FROM incidents i
+                    WHERE i.last_seen_utc >= @from AND i.last_seen_utc <= @to
+                      AND i.tenant_id=@tenant
+                      AND LOWER(COALESCE(i.status,'')) NOT IN ('closed','resolved')
+                    UNION ALL
+                    SELECT COALESCE(NULLIF(i.destination_agent_id,''), NULLIF(i.destination_host,''), NULLIF(i.destination_ip,'')) AS asset_key
+                    FROM incidents i
+                    WHERE i.last_seen_utc >= @from AND i.last_seen_utc <= @to
+                      AND i.tenant_id=@tenant
+                      AND LOWER(COALESCE(i.status,'')) NOT IN ('closed','resolved')
+                ) affected
+                WHERE asset_key IS NOT NULL AND BTRIM(asset_key) <> '';
+                """;
+            affectedCmd.Parameters.AddWithValue("tenant", tenantId);
+            affectedCmd.Parameters.AddWithValue("from", fromUtc.ToUniversalTime());
+            affectedCmd.Parameters.AddWithValue("to", toUtc.ToUniversalTime());
+            result.AffectedAssets = Convert.ToInt32(await affectedCmd.ExecuteScalarAsync());
+        }
+
+        return result;
+    }
+
+    public async Task<TenantReportAggregate> GetDashboardOverviewAggregateAsync(
+        string tenantId,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedTenant = NormalizeTenantId(tenantId);
+        await using var conn = new NpgsqlConnection(_cs);
+        await conn.OpenAsync(cancellationToken);
+        var result = new TenantReportAggregate();
+
+        await using (var telemetryCmd = conn.CreateCommand())
+        {
+            telemetryCmd.CommandText =
+                """
+                SELECT
+                    (SELECT COUNT(*)
+                     FROM security_events e
+                     WHERE e.tenant_id=@tenant
+                       AND e.timestamp_utc >= @from AND e.timestamp_utc <= @to),
+                    (SELECT e.timestamp_utc
+                     FROM security_events e
+                     WHERE e.tenant_id=@tenant AND e.timestamp_utc <= @to
+                     ORDER BY e.timestamp_utc DESC
+                     LIMIT 1),
+                    (SELECT n.timestamp_utc
+                     FROM network_connections n
+                     WHERE n.tenant_id=@tenant AND n.timestamp_utc <= @to
+                     ORDER BY n.timestamp_utc DESC
+                     LIMIT 1);
+                """;
+            telemetryCmd.Parameters.AddWithValue("tenant", normalizedTenant);
+            telemetryCmd.Parameters.AddWithValue("from", fromUtc.ToUniversalTime());
+            telemetryCmd.Parameters.AddWithValue("to", toUtc.ToUniversalTime());
+            await using var reader = await telemetryCmd.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                result.ThreatEvents = Convert.ToInt64(reader.GetValue(0));
+                result.LatestEventAtUtc = reader.IsDBNull(1)
+                    ? null
+                    : reader.GetFieldValue<DateTimeOffset>(1);
+                result.LatestConnectionAtUtc = reader.IsDBNull(2)
+                    ? null
+                    : reader.GetFieldValue<DateTimeOffset>(2);
+            }
+        }
+
+        await using (var incidentCmd = conn.CreateCommand())
+        {
+            incidentCmd.CommandText =
+                """
+                SELECT COUNT(*),
+                       COALESCE(SUM(CASE WHEN LOWER(BTRIM(COALESCE(i.status,''))) IN ('closed','resolved') THEN 0 ELSE 1 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=4 THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=3 THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=2 THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=1 THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=4 AND LOWER(BTRIM(COALESCE(i.status,''))) NOT IN ('closed','resolved') THEN 1 ELSE 0 END),0),
+                       COALESCE(SUM(CASE WHEN i.severity=3 AND LOWER(BTRIM(COALESCE(i.status,''))) NOT IN ('closed','resolved') THEN 1 ELSE 0 END),0)
+                FROM incidents i
+                WHERE i.tenant_id=@tenant;
+                """;
+            incidentCmd.Parameters.AddWithValue("tenant", normalizedTenant);
+            await using var reader = await incidentCmd.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                result.Incidents = Convert.ToInt64(reader.GetValue(0));
+                result.OpenIncidents = Convert.ToInt32(reader.GetValue(1));
+                result.CriticalIncidents = Convert.ToInt32(reader.GetValue(2));
+                result.HighIncidents = Convert.ToInt32(reader.GetValue(3));
+                result.MediumIncidents = Convert.ToInt32(reader.GetValue(4));
+                result.LowIncidents = Convert.ToInt32(reader.GetValue(5));
+                result.CriticalOpenIncidents = Convert.ToInt32(reader.GetValue(6));
+                result.HighOpenIncidents = Convert.ToInt32(reader.GetValue(7));
+            }
+        }
+
+        await using (var affectedCmd = conn.CreateCommand())
+        {
+            affectedCmd.CommandText =
+                """
+                SELECT COUNT(DISTINCT asset_key)
+                FROM (
+                    SELECT COALESCE(NULLIF(BTRIM(i.source_agent_id),''), NULLIF(BTRIM(i.source_host),''), NULLIF(BTRIM(i.source_ip),'')) AS asset_key
+                    FROM incidents i
+                    WHERE i.tenant_id=@tenant
+                      AND LOWER(BTRIM(COALESCE(i.status,''))) NOT IN ('closed','resolved')
+                    UNION ALL
+                    SELECT COALESCE(NULLIF(BTRIM(i.destination_agent_id),''), NULLIF(BTRIM(i.destination_host),''), NULLIF(BTRIM(i.destination_ip),'')) AS asset_key
+                    FROM incidents i
+                    WHERE i.tenant_id=@tenant
+                      AND LOWER(BTRIM(COALESCE(i.status,''))) NOT IN ('closed','resolved')
+                ) affected
+                WHERE asset_key IS NOT NULL AND BTRIM(asset_key) <> '';
+                """;
+            affectedCmd.Parameters.AddWithValue("tenant", normalizedTenant);
+            result.AffectedAssets = Convert.ToInt32(
+                await affectedCmd.ExecuteScalarAsync(cancellationToken));
         }
 
         return result;
@@ -743,19 +1104,14 @@ public sealed class PostgresStore : ICentralStore
                    source_process_path, source_service_names, source_command_line,
                    destination_host, destination_agent_id, destination_ip, destination_port,
                    username, domain, logon_type, failed_logon_count, successful_logon_count, privileged_logon,
-                   evidence_json, status
+                   evidence_json, status, i.tenant_id
             FROM incidents i
             WHERE incident_id = @id
-              AND (@tenant IS NULL OR EXISTS (
-                    SELECT 1 FROM tenant_agent_assignments taa
-                    WHERE taa.tenant_id=@tenant
-                      AND (taa.agent_id=i.source_agent_id OR taa.agent_id=i.destination_agent_id))
-                   OR (@tenant='default' AND NOT EXISTS (
-                    SELECT 1 FROM tenant_agent_assignments mapped
-                    WHERE mapped.agent_id=i.source_agent_id OR mapped.agent_id=i.destination_agent_id)));
+              AND (@tenant IS NULL OR i.tenant_id=@tenant);
             """;
         cmd.Parameters.AddWithValue("id", id);
-        cmd.Parameters.AddWithValue("tenant", NpgsqlTypes.NpgsqlDbType.Text, (object?)tenantId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("tenant", NpgsqlTypes.NpgsqlDbType.Text,
+            string.IsNullOrWhiteSpace(tenantId) ? DBNull.Value : NormalizeTenantId(tenantId));
         await using var reader = await cmd.ExecuteReaderAsync();
         if (!await reader.ReadAsync())
         {
@@ -808,7 +1164,8 @@ public sealed class PostgresStore : ICentralStore
         string remoteIp,
         int? remotePort,
         DateTimeOffset from,
-        DateTimeOffset to)
+        DateTimeOffset to,
+        string? tenantId = null)
     {
         await using var conn = new NpgsqlConnection(_cs);
         await conn.OpenAsync();
@@ -816,11 +1173,13 @@ public sealed class PostgresStore : ICentralStore
         cmd.CommandText =
             """
             SELECT agent_id, computer_name, timestamp_utc, local_address, local_port, remote_address, remote_port,
-                   process_id, process_name, process_path, process_command_line, service_names
+                   process_id, process_name, process_path, process_command_line, service_names, tenant_id,
+                   protocol, is_new, is_closed, payload
             FROM network_connections
             WHERE remote_address = @remote
               AND timestamp_utc BETWEEN @from AND @to
               AND (@port IS NULL OR remote_port = @port)
+              AND (@tenant IS NULL OR tenant_id=@tenant)
             ORDER BY timestamp_utc DESC
             LIMIT 200;
             """;
@@ -828,25 +1187,41 @@ public sealed class PostgresStore : ICentralStore
         cmd.Parameters.AddWithValue("from", from);
         cmd.Parameters.AddWithValue("to", to);
         cmd.Parameters.AddWithValue("port", (object?)remotePort ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("tenant", NpgsqlTypes.NpgsqlDbType.Text,
+            string.IsNullOrWhiteSpace(tenantId) ? DBNull.Value : NormalizeTenantId(tenantId));
         var list = new List<NetworkConnectionRecord>();
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            list.Add(new NetworkConnectionRecord
+            NetworkConnectionRecord item;
+            try
             {
-                AgentId = reader.GetString(0),
-                ComputerName = reader.GetString(1),
-                TimestampUtc = reader.GetFieldValue<DateTimeOffset>(2),
-                LocalAddress = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
-                LocalPort = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
-                RemoteAddress = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-                RemotePort = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
-                ProcessId = reader.IsDBNull(7) ? 0 : reader.GetInt32(7),
-                ProcessName = reader.IsDBNull(8) ? null : reader.GetString(8),
-                ProcessPath = reader.IsDBNull(9) ? null : reader.GetString(9),
-                ProcessCommandLine = reader.IsDBNull(10) ? null : reader.GetString(10),
-                ServiceNames = reader.IsDBNull(11) ? null : reader.GetString(11)
-            });
+                item = reader.IsDBNull(16)
+                    ? new NetworkConnectionRecord()
+                    : JsonSerializer.Deserialize<NetworkConnectionRecord>(reader.GetString(16), JsonOptions)
+                      ?? new NetworkConnectionRecord();
+            }
+            catch (JsonException)
+            {
+                item = new NetworkConnectionRecord();
+            }
+            item.AgentId = reader.GetString(0);
+            item.ComputerName = reader.GetString(1);
+            item.TimestampUtc = reader.GetFieldValue<DateTimeOffset>(2);
+            item.LocalAddress = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+            item.LocalPort = reader.IsDBNull(4) ? 0 : reader.GetInt32(4);
+            item.RemoteAddress = reader.IsDBNull(5) ? string.Empty : reader.GetString(5);
+            item.RemotePort = reader.IsDBNull(6) ? 0 : reader.GetInt32(6);
+            item.ProcessId = reader.IsDBNull(7) ? 0 : reader.GetInt32(7);
+            item.ProcessName = reader.IsDBNull(8) ? null : reader.GetString(8);
+            item.ProcessPath = reader.IsDBNull(9) ? null : reader.GetString(9);
+            item.ProcessCommandLine = reader.IsDBNull(10) ? null : reader.GetString(10);
+            item.ServiceNames = reader.IsDBNull(11) ? null : reader.GetString(11);
+            item.TenantId = reader.GetString(12);
+            item.Protocol = reader.IsDBNull(13) ? "TCP" : reader.GetString(13);
+            item.IsNew = !reader.IsDBNull(14) && reader.GetBoolean(14);
+            item.IsClosed = !reader.IsDBNull(15) && reader.GetBoolean(15);
+            list.Add(item);
         }
 
         return list;
@@ -881,7 +1256,8 @@ public sealed class PostgresStore : ICentralStore
         SuccessfulLogonCount = reader.GetInt32(24),
         PrivilegedLogon = reader.GetBoolean(25),
         EvidenceJson = reader.IsDBNull(26) ? "[]" : reader.GetString(26),
-        Status = reader.GetString(27)
+        Status = reader.GetString(27),
+        TenantId = reader.FieldCount > 28 && !reader.IsDBNull(28) ? reader.GetString(28) : "default"
     };
 
     public async Task SavePendingActionAsync(ResponseActionRequest request, string agentKey)
@@ -910,31 +1286,34 @@ public sealed class PostgresStore : ICentralStore
         await using var cmd = conn.CreateCommand();
         cmd.CommandText =
             """
-            SELECT request_id, payload, agent_key FROM pending_actions
-            WHERE delivered=FALSE AND (agent_key=@a OR agent_key='broadcast')
-            ORDER BY created_at_utc ASC LIMIT 50;
+            WITH claimed AS (
+                SELECT request_id
+                FROM pending_actions
+                WHERE delivered=FALSE AND agent_key=@a
+                ORDER BY created_at_utc ASC
+                LIMIT 50
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE pending_actions AS pending
+            SET delivered=TRUE
+            FROM claimed
+            WHERE pending.request_id=claimed.request_id
+            RETURNING pending.payload, pending.created_at_utc;
             """;
         cmd.Parameters.AddWithValue("a", agentId);
-        var rows = new List<(string Id, string Payload, string Key)>();
+        var rows = new List<(string Payload, DateTimeOffset CreatedAtUtc)>();
         await using (var reader = await cmd.ExecuteReaderAsync())
         {
             while (await reader.ReadAsync())
-                rows.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+                rows.Add((reader.GetString(0), reader.GetFieldValue<DateTimeOffset>(1)));
         }
 
         var result = new List<ResponseActionRequest>();
-        foreach (var (id, payload, key) in rows)
+        foreach (var (payload, _) in rows.OrderBy(item => item.CreatedAtUtc))
         {
             var req = JsonSerializer.Deserialize<ResponseActionRequest>(payload, JsonOptions);
             if (req is null) continue;
             result.Add(req);
-            if (!string.Equals(key, "broadcast", StringComparison.OrdinalIgnoreCase))
-            {
-                await using var mark = conn.CreateCommand();
-                mark.CommandText = "UPDATE pending_actions SET delivered=TRUE WHERE request_id=@id;";
-                mark.Parameters.AddWithValue("id", id);
-                await mark.ExecuteNonQueryAsync();
-            }
         }
 
         return result;
@@ -980,6 +1359,30 @@ public sealed class PostgresStore : ICentralStore
         var list = new List<(string, string)>();
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
+            list.Add((reader.GetString(0), reader.GetString(1)));
+        return list;
+    }
+
+    public async Task<IReadOnlyList<(string Id, string Json)>> ListCampaignJsonPageAsync(
+        string? afterCampaignId,
+        int take,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePendingTablesAsync();
+        await using var conn = new NpgsqlConnection(_cs);
+        await conn.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT campaign_id, payload FROM threat_campaigns
+            WHERE (@after='' OR campaign_id > @after)
+            ORDER BY campaign_id ASC LIMIT @n;
+            """;
+        cmd.Parameters.AddWithValue("after", afterCampaignId ?? string.Empty);
+        cmd.Parameters.AddWithValue("n", Math.Clamp(take, 1, 500));
+        var list = new List<(string, string)>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
             list.Add((reader.GetString(0), reader.GetString(1)));
         return list;
     }
@@ -1300,6 +1703,118 @@ public sealed class PostgresStore : ICentralStore
         await cmd.ExecuteNonQueryAsync();
     }
 
+    public async Task<IReadOnlyList<ReportTemplateDefinition>> ListReportTemplatesAsync(string tenantId)
+    {
+        tenantId = NormalizeTenantId(tenantId);
+        await using var conn = new NpgsqlConnection(_cs);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT payload::text FROM report_templates WHERE tenant_id=@tenant ORDER BY name, template_id;";
+        cmd.Parameters.AddWithValue("tenant", tenantId);
+        var list = new List<ReportTemplateDefinition>();
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var template = JsonSerializer.Deserialize<ReportTemplateDefinition>(reader.GetString(0), JsonOptions);
+            if (template is null) continue;
+            template.TenantId = tenantId;
+            template.IsBuiltIn = false;
+            list.Add(template);
+        }
+        return list;
+    }
+
+    public async Task<ReportTemplateDefinition?> GetReportTemplateAsync(string tenantId, string templateId)
+    {
+        tenantId = NormalizeTenantId(tenantId);
+        await using var conn = new NpgsqlConnection(_cs);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT payload::text FROM report_templates WHERE tenant_id=@tenant AND template_id=@id LIMIT 1;";
+        cmd.Parameters.AddWithValue("tenant", tenantId);
+        cmd.Parameters.AddWithValue("id", templateId);
+        var payload = await cmd.ExecuteScalarAsync();
+        if (payload is not string json) return null;
+        var template = JsonSerializer.Deserialize<ReportTemplateDefinition>(json, JsonOptions);
+        if (template is null) return null;
+        template.TenantId = tenantId;
+        template.IsBuiltIn = false;
+        return template;
+    }
+
+    public async Task UpsertReportTemplateAsync(string tenantId, ReportTemplateDefinition template)
+    {
+        tenantId = NormalizeTenantId(tenantId);
+        template.TenantId = tenantId;
+        template.IsBuiltIn = false;
+        await using var conn = new NpgsqlConnection(_cs);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            """
+            INSERT INTO report_templates(
+                tenant_id, template_id, name, version, payload, created_at_utc, updated_at_utc)
+            VALUES (@tenant, @id, @name, @version, @payload::jsonb, @created, @updated)
+            ON CONFLICT(tenant_id, template_id) DO UPDATE SET
+                name=EXCLUDED.name,
+                version=EXCLUDED.version,
+                payload=EXCLUDED.payload,
+                updated_at_utc=EXCLUDED.updated_at_utc;
+            """;
+        cmd.Parameters.AddWithValue("tenant", tenantId);
+        cmd.Parameters.AddWithValue("id", template.TemplateId);
+        cmd.Parameters.AddWithValue("name", template.Name);
+        cmd.Parameters.AddWithValue("version", template.Version);
+        cmd.Parameters.AddWithValue("payload", JsonSerializer.Serialize(template, JsonOptions));
+        cmd.Parameters.AddWithValue("created", template.CreatedAtUtc);
+        cmd.Parameters.AddWithValue("updated", template.UpdatedAtUtc);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<bool> TryUpdateReportTemplateAsync(
+        string tenantId,
+        ReportTemplateDefinition template,
+        int expectedVersion)
+    {
+        tenantId = NormalizeTenantId(tenantId);
+        template.TenantId = tenantId;
+        template.IsBuiltIn = false;
+        await using var conn = new NpgsqlConnection(_cs);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText =
+            """
+            UPDATE report_templates SET
+                name=@name,
+                version=@version,
+                payload=@payload::jsonb,
+                updated_at_utc=@updated
+            WHERE tenant_id=@tenant AND template_id=@id AND version=@expected;
+            """;
+        cmd.Parameters.AddWithValue("tenant", tenantId);
+        cmd.Parameters.AddWithValue("id", template.TemplateId);
+        cmd.Parameters.AddWithValue("name", template.Name);
+        cmd.Parameters.AddWithValue("version", template.Version);
+        cmd.Parameters.AddWithValue("payload", JsonSerializer.Serialize(template, JsonOptions));
+        cmd.Parameters.AddWithValue("updated", template.UpdatedAtUtc);
+        cmd.Parameters.AddWithValue("expected", expectedVersion);
+        return await cmd.ExecuteNonQueryAsync() == 1;
+    }
+
+    public async Task<bool> DeleteReportTemplateAsync(string tenantId, string templateId)
+    {
+        tenantId = NormalizeTenantId(tenantId);
+        await using var conn = new NpgsqlConnection(_cs);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM report_templates WHERE tenant_id=@tenant AND template_id=@id;";
+        cmd.Parameters.AddWithValue("tenant", tenantId);
+        cmd.Parameters.AddWithValue("id", templateId);
+        return await cmd.ExecuteNonQueryAsync() > 0;
+    }
+
     public async Task<IReadOnlyList<TenantAsset>> ListAssetsAsync(string tenantId)
     {
         await using var conn = new NpgsqlConnection(_cs);
@@ -1559,4 +2074,7 @@ public sealed class PostgresStore : ICentralStore
             UpdatedAtUtc = reader.GetFieldValue<DateTimeOffset>(13)
         };
     }
+
+    private static string NormalizeTenantId(string? tenantId) =>
+        string.IsNullOrWhiteSpace(tenantId) ? "default" : tenantId.Trim().ToLowerInvariant();
 }

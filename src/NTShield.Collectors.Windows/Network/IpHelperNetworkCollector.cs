@@ -24,6 +24,7 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
     private readonly ILogger<IpHelperNetworkCollector> _logger;
     private HashSet<string> _previousKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, NetworkConnectionRecord> _previousRecords = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _lastObservationUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<int> _hashedPids = [];
 
     public IpHelperNetworkCollector(
@@ -53,7 +54,11 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
 
         foreach (var row in IpHelperNative.GetTcpConnections())
         {
-            var key = $"TCP|{row.LocalAddress}|{row.LocalPort}|{row.RemoteAddress}|{row.RemotePort}|{row.ProcessId}|{(int)row.State}";
+            // TCP state changes are observations within one lifecycle, not a
+            // synthetic close+reopen. A true reconnect receives a new
+            // LifecycleId after the tuple disappears from a snapshot.
+            var key = BuildConnectionKey(
+                "TCP", row.LocalAddress, row.LocalPort, row.RemoteAddress, row.RemotePort, row.ProcessId);
             var rec = new NetworkConnectionRecord
             {
                 TimestampUtc = now,
@@ -68,6 +73,7 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
                 ProcessId = row.ProcessId,
                 ConnectionKey = key
             };
+            CarryLifecycle(key, rec, now);
             current[key] = rec;
         }
 
@@ -75,7 +81,7 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
         {
             foreach (var row in IpHelperNative.GetUdpListeners())
             {
-                var key = $"UDP|{row.LocalAddress}|{row.LocalPort}|-|-|{row.ProcessId}|0";
+                var key = BuildConnectionKey("UDP", row.LocalAddress, row.LocalPort, "", 0, row.ProcessId);
                 var rec = new NetworkConnectionRecord
                 {
                     TimestampUtc = now,
@@ -89,6 +95,7 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
                     ProcessId = row.ProcessId,
                     ConnectionKey = key
                 };
+                CarryLifecycle(key, rec, now);
                 current[key] = rec;
             }
         }
@@ -101,12 +108,30 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
         {
             if (_previousKeys.Contains(key))
             {
+                var stateChanged = _previousRecords.TryGetValue(key, out var previous) &&
+                                   previous.TcpState != rec.TcpState;
+                var interval = TimeSpan.FromSeconds(Math.Clamp(
+                    _options.ActiveConnectionObservationSeconds, 15, 3_600));
+                var lastEmitted = _lastObservationUtc.TryGetValue(key, out var value)
+                    ? value
+                    : rec.StartedAtUtc ?? now;
+                // UDP listener rows do not identify a remote contact, so a
+                // periodic listener snapshot would add volume without chain evidence.
+                var remoteContact = !string.IsNullOrWhiteSpace(rec.RemoteAddress);
+                if (stateChanged || (remoteContact && now - lastEmitted >= interval))
+                {
+                    rec.IsNew = false;
+                    rec.IsClosed = false;
+                    diffs.Add(Clone(rec));
+                    _lastObservationUtc[key] = now;
+                }
                 continue;
             }
 
             rec.IsNew = true;
             await EnrichAsync(rec, cancellationToken);
-            diffs.Add(rec);
+            diffs.Add(Clone(rec));
+            _lastObservationUtc[key] = now;
         }
 
         // Closed connections
@@ -121,10 +146,12 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
             {
                 var closed = Clone(prev);
                 closed.TimestampUtc = now;
+                closed.EndedAtUtc = now;
                 closed.IsNew = false;
                 closed.IsClosed = true;
                 diffs.Add(closed);
             }
+            _lastObservationUtc.Remove(key);
         }
 
         _previousKeys = currentKeys;
@@ -135,6 +162,40 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
         }
 
         return diffs;
+    }
+
+    internal static string BuildConnectionKey(
+        string protocol,
+        string localAddress,
+        int localPort,
+        string remoteAddress,
+        int remotePort,
+        int processId) =>
+        $"{protocol.ToUpperInvariant()}|{localAddress}|{localPort}|{remoteAddress}|{remotePort}|{processId}";
+
+    private void CarryLifecycle(string key, NetworkConnectionRecord current, DateTimeOffset now)
+    {
+        if (!_previousRecords.TryGetValue(key, out var previous))
+        {
+            current.StartedAtUtc = now;
+            current.LifecycleId = Guid.NewGuid().ToString("N");
+            return;
+        }
+
+        current.StartedAtUtc = previous.StartedAtUtc ?? previous.TimestampUtc;
+        current.LifecycleId = string.IsNullOrWhiteSpace(previous.LifecycleId)
+            ? Guid.NewGuid().ToString("N")
+            : previous.LifecycleId;
+        current.ProcessName = previous.ProcessName;
+        current.ProcessPath = previous.ProcessPath;
+        current.ProcessCommandLine = previous.ProcessCommandLine;
+        current.ProcessOwner = previous.ProcessOwner;
+        current.ParentProcessId = previous.ParentProcessId;
+        current.DigitalSignatureStatus = previous.DigitalSignatureStatus;
+        current.SignerName = previous.SignerName;
+        current.ExecutableSha256 = previous.ExecutableSha256;
+        current.ServiceNames = previous.ServiceNames;
+        current.ServiceDisplayNames = previous.ServiceDisplayNames;
     }
 
     private async Task EnrichAsync(NetworkConnectionRecord rec, CancellationToken cancellationToken)
@@ -176,7 +237,11 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
 
     private static NetworkConnectionRecord Clone(NetworkConnectionRecord s) => new()
     {
+        TenantId = s.TenantId,
+        Id = s.Id,
         TimestampUtc = s.TimestampUtc,
+        StartedAtUtc = s.StartedAtUtc,
+        EndedAtUtc = s.EndedAtUtc,
         ComputerName = s.ComputerName,
         AgentId = s.AgentId,
         Protocol = s.Protocol,
@@ -196,6 +261,9 @@ public sealed class IpHelperNetworkCollector : INetworkCollector
         ExecutableSha256 = s.ExecutableSha256,
         ServiceNames = s.ServiceNames,
         ServiceDisplayNames = s.ServiceDisplayNames,
+        IsNew = s.IsNew,
+        IsClosed = s.IsClosed,
+        LifecycleId = s.LifecycleId,
         ConnectionKey = s.ConnectionKey
     };
 }

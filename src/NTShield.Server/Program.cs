@@ -1,11 +1,13 @@
 using System.IO.Compression;
 using System.Net;
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using NTShield.Server.AI;
 using Microsoft.Extensions.Options;
 using NTShield.Server.Correlation;
+using NTShield.Server.Capture;
 using NTShield.Server.Data;
 using NTShield.Server.LLM;
 using NTShield.Server.Security;
@@ -15,6 +17,9 @@ using NTShield.Server.Syslog;
 using NTShield.Shared.Contracts;
 using NTShield.Shared.Models;
 using Microsoft.AspNetCore.Authentication.Certificate;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
@@ -47,9 +52,11 @@ builder.Services.Configure<ClickHouseOptions>(builder.Configuration.GetSection(C
 builder.Services.Configure<CorrelationOptions>(builder.Configuration.GetSection(CorrelationOptions.SectionName));
 builder.Services.Configure<SyslogOptions>(builder.Configuration.GetSection(SyslogOptions.SectionName));
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
+builder.Services.Configure<DashboardAuthOptions>(builder.Configuration.GetSection(DashboardAuthOptions.SectionName));
 builder.Services.Configure<LlmGatewayOptions>(builder.Configuration.GetSection(LlmGatewayOptions.SectionName));
 builder.Services.Configure<AiAnalystOptions>(builder.Configuration.GetSection(AiAnalystOptions.SectionName));
 builder.Services.Configure<AiAnomalyOptions>(builder.Configuration.GetSection(AiAnomalyOptions.SectionName));
+builder.Services.AddCaptureControlPlane(builder.Configuration);
 // Bootstrap secrets into options before DI freezes them
 builder.Services.PostConfigure<SecurityOptions>(opts =>
 {
@@ -63,8 +70,11 @@ var dbProvider = builder.Configuration["Database:Provider"] ?? "Sqlite";
 if (string.Equals(dbProvider, "ClickHouse", StringComparison.OrdinalIgnoreCase))
 {
     builder.Services.AddSingleton<SqliteCentralStore>();
+    builder.Services.AddSingleton<PostgresStore>();
     builder.Services.AddSingleton<ICentralStore, ClickHouseStore>();
-    Log.Information("Central database provider: ClickHouse analytics + SQLite control plane");
+    Log.Information(
+        "Central database provider: ClickHouse analytics + {ControlProvider} control plane",
+        builder.Configuration["ClickHouse:ControlProvider"] ?? "Sqlite");
 }
 else if (string.Equals(dbProvider, "Postgres", StringComparison.OrdinalIgnoreCase) ||
     string.Equals(dbProvider, "PostgreSQL", StringComparison.OrdinalIgnoreCase))
@@ -80,6 +90,10 @@ else
 
 builder.Services.AddSingleton<CrossHostCorrelator>();
 builder.Services.AddSingleton<LateralMovementTracker>();
+builder.Services.AddSingleton<TemporalThreatRevisionNotifier>();
+builder.Services.Configure<TemporalThreatOptions>(builder.Configuration.GetSection(TemporalThreatOptions.SectionName));
+builder.Services.AddSingleton<TemporalAttackChainService>();
+builder.Services.AddHostedService<TemporalCorrelationWorker>();
 builder.Services.AddSingleton<TelemetryFeatureBuilder>();
 builder.Services.AddSingleton<IngestTenantResolver>();
 builder.Services.AddSingleton<IngestService>();
@@ -131,7 +145,16 @@ builder.Services.AddHttpClient("geoip", client =>
 builder.Services.AddSingleton<GeoIpService>();
 builder.Services.AddSingleton<TopologyService>();
 builder.Services.AddSingleton<TenantManagementService>();
+builder.Services.AddSingleton<ReportTemplateService>();
 builder.Services.AddSingleton<TenantReportService>();
+builder.Services.AddSingleton<DashboardSummaryService>();
+builder.Services.AddSingleton<CentralReadinessState>();
+builder.Services.AddHostedService<CentralStoreInitializer>();
+builder.Services.AddHostedService<CentralWarmupService>();
+builder.Services.AddSingleton<LocalDashboardCredentialValidator>();
+builder.Services.AddSingleton<DashboardLoginAttemptLimiter>();
+builder.Services.AddSingleton<SecurityAuditQueue>();
+builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<SecurityAuditQueue>());
 
 // Agent may send gzip-compressed ingest batches (body > ~4KB). Without this, ASP.NET returns 400 BadRequest.
 builder.Services.AddRequestDecompression();
@@ -142,6 +165,147 @@ builder.Services.AddResponseCompression(o =>
     o.Providers.Add<BrotliCompressionProvider>();
 });
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+
+var dashboardAuth = builder.Configuration.GetSection(DashboardAuthOptions.SectionName)
+    .Get<DashboardAuthOptions>() ?? new DashboardAuthOptions();
+if (!string.IsNullOrWhiteSpace(dashboardAuth.DataProtectionPath))
+{
+    var keyDirectory = new DirectoryInfo(Path.GetFullPath(dashboardAuth.DataProtectionPath));
+    keyDirectory.Create();
+    builder.Services.AddDataProtection()
+        .SetApplicationName("NTShieldCentral")
+        .PersistKeysToFileSystem(keyDirectory);
+}
+
+var enableMtlsAuth = builder.Configuration.GetValue("Security:EnableMtls", false);
+var authentication = builder.Services.AddAuthentication(options =>
+{
+    options.DefaultScheme = DashboardSessionEndpoints.CookieScheme;
+    options.DefaultAuthenticateScheme = DashboardSessionEndpoints.CookieScheme;
+    options.DefaultSignInScheme = DashboardSessionEndpoints.CookieScheme;
+    options.DefaultChallengeScheme = dashboardAuth.Oidc.Enabled
+        ? DashboardSessionEndpoints.OidcScheme
+        : DashboardSessionEndpoints.CookieScheme;
+});
+authentication.AddCookie(DashboardSessionEndpoints.CookieScheme, options =>
+{
+    options.Cookie.Name = dashboardAuth.CookieName;
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.Path = "/";
+    options.SlidingExpiration = true;
+    options.ExpireTimeSpan = TimeSpan.FromHours(Math.Clamp(dashboardAuth.SessionHours, 1, 24));
+    options.Events.OnRedirectToLogin = context =>
+    {
+        if (context.Request.Path.StartsWithSegments("/api"))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        }
+        context.Response.Redirect(context.RedirectUri);
+        return Task.CompletedTask;
+    };
+    options.Events.OnRedirectToAccessDenied = context =>
+    {
+        if (context.Request.Path.StartsWithSegments("/api"))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        }
+        context.Response.Redirect(context.RedirectUri);
+        return Task.CompletedTask;
+    };
+});
+
+if (dashboardAuth.Oidc.Enabled)
+{
+    if (string.IsNullOrWhiteSpace(dashboardAuth.Oidc.Authority) ||
+        string.IsNullOrWhiteSpace(dashboardAuth.Oidc.ClientId) ||
+        string.IsNullOrWhiteSpace(dashboardAuth.Oidc.ClientSecret))
+    {
+        throw new InvalidOperationException(
+            "DashboardAuth:Oidc requires Authority, ClientId and ClientSecret for confidential code flow when enabled.");
+    }
+
+    authentication.AddOpenIdConnect(DashboardSessionEndpoints.OidcScheme, options =>
+    {
+        var oidc = dashboardAuth.Oidc;
+        options.Authority = oidc.Authority;
+        options.ClientId = oidc.ClientId;
+        options.ClientSecret = oidc.ClientSecret;
+        options.CallbackPath = oidc.CallbackPath;
+        options.ResponseType = "code";
+        options.UsePkce = true;
+        options.SaveTokens = false;
+        options.GetClaimsFromUserInfoEndpoint = true;
+        options.RequireHttpsMetadata = oidc.RequireHttpsMetadata;
+        options.SignInScheme = DashboardSessionEndpoints.CookieScheme;
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters.NameClaimType = oidc.NameClaim;
+        options.TokenValidationParameters.RoleClaimType = ClaimTypes.Role;
+        options.Events.OnTokenValidated = context =>
+        {
+            if (context.Principal?.Identity is not ClaimsIdentity identity) return Task.CompletedTask;
+            var sourceRoles = context.Principal.FindAll(oidc.RoleClaim)
+                .Select(claim => claim.Value)
+                .Where(DashboardRoles.IsKnown)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (sourceRoles.Length == 0 && DashboardRoles.IsKnown(oidc.DefaultRole))
+                sourceRoles = [oidc.DefaultRole];
+            foreach (var role in sourceRoles)
+                if (!identity.HasClaim(ClaimTypes.Role, role)) identity.AddClaim(new Claim(ClaimTypes.Role, role));
+
+            foreach (var tenant in context.Principal.FindAll(oidc.TenantClaim)
+                         .Select(claim => claim.Value)
+                         .Where(value => !string.IsNullOrWhiteSpace(value))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                identity.AddClaim(new Claim(DashboardSessionEndpoints.TenantClaim, tenant));
+            }
+            if (!identity.HasClaim(claim => claim.Type == DashboardSessionEndpoints.TenantClaim))
+            {
+                foreach (var tenant in oidc.DefaultTenantIds
+                             .Where(value => !string.IsNullOrWhiteSpace(value))
+                             .Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    identity.AddClaim(new Claim(DashboardSessionEndpoints.TenantClaim, tenant.Trim()));
+                }
+            }
+            if (!identity.HasClaim(claim => claim.Type == ClaimTypes.NameIdentifier) &&
+                context.Principal.FindFirst("sub") is { } subject)
+                identity.AddClaim(new Claim(ClaimTypes.NameIdentifier, subject.Value));
+            identity.AddClaim(new Claim(DashboardSessionEndpoints.AuthTypeClaim, "oidc"));
+            return Task.CompletedTask;
+        };
+    });
+}
+
+if (enableMtlsAuth)
+{
+    authentication.AddCertificate(CertificateAuthenticationDefaults.AuthenticationScheme, options =>
+    {
+        options.AllowedCertificateTypes = CertificateTypes.All;
+        options.RevocationMode = X509RevocationMode.NoCheck;
+    });
+}
+
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("SocPacketAccess", policy => policy.RequireAssertion(context =>
+        context.User.IsInRole(DashboardRoles.SocOperator) ||
+        context.User.IsInRole(DashboardRoles.SocAdmin) ||
+        LegacyOperatorOrSoftLab(context)))
+    .AddPolicy("SocAdmin", policy => policy.RequireAssertion(context =>
+        context.User.IsInRole(DashboardRoles.SocAdmin) ||
+        LegacyOperatorOrSoftLab(context)))
+    .AddPolicy("SocResponseAction", policy => policy.RequireAssertion(context =>
+        context.User.IsInRole(DashboardRoles.SocOperator) ||
+        context.User.IsInRole(DashboardRoles.SocAdmin) ||
+        LegacyOperatorOrSoftLab(context)))
+    .AddPolicy("TenantAdmin", policy => policy.RequireAssertion(context =>
+        context.User.IsInRole(DashboardRoles.SocAdmin) ||
+        LegacyOperatorOrSoftLab(context)));
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -189,18 +353,6 @@ builder.WebHost.ConfigureKestrel(options =>
     }
 });
 
-var enableMtlsAuth = builder.Configuration.GetValue("Security:EnableMtls", false);
-if (enableMtlsAuth)
-{
-    builder.Services.AddAuthentication(CertificateAuthenticationDefaults.AuthenticationScheme)
-        .AddCertificate(options =>
-        {
-            options.AllowedCertificateTypes = CertificateTypes.All;
-            options.RevocationMode = X509RevocationMode.NoCheck;
-        });
-    builder.Services.AddAuthorization();
-}
-
 var app = builder.Build();
 // Force secret bootstrap early (PostConfigure runs on first resolve)
 _ = app.Services.GetRequiredService<IOptions<SecurityOptions>>().Value;
@@ -240,7 +392,11 @@ app.UseStaticFiles(new StaticFileOptions
 // Must run before model binding so gzip/br request bodies become readable JSON
 app.UseRequestDecompression();
 app.UseResponseCompression();
+app.UseMiddleware<RequestTimingMiddleware>();
+app.UseAuthentication();
 app.UseMiddleware<ApiKeyAuthMiddleware>();
+app.UseMiddleware<DashboardCsrfMiddleware>();
+app.UseAuthorization();
 app.Use(async (ctx, next) =>
 {
     try
@@ -253,6 +409,43 @@ app.Use(async (ctx, next) =>
         {
             ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
             await ctx.Response.WriteAsJsonAsync(new { error = "validation_error", detail = ex.Message });
+        }
+    }
+    catch (IngestIdentityException ex)
+    {
+        if (!ctx.Response.HasStarted)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await ctx.Response.WriteAsJsonAsync(new { error = "agent_id_mismatch", detail = ex.Message });
+        }
+    }
+    catch (TenantAccessDeniedException ex)
+    {
+        if (!ctx.Response.HasStarted)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await ctx.Response.WriteAsJsonAsync(new { error = "tenant_access_denied", detail = ex.Message });
+        }
+    }
+    catch (ReportTemplateReadOnlyException ex)
+    {
+        if (!ctx.Response.HasStarted)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status409Conflict;
+            await ctx.Response.WriteAsJsonAsync(new { error = "built_in_template_read_only", detail = ex.Message });
+        }
+    }
+    catch (ReportTemplateVersionConflictException ex)
+    {
+        if (!ctx.Response.HasStarted)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status409Conflict;
+            await ctx.Response.WriteAsJsonAsync(new
+            {
+                error = "report_template_version_conflict",
+                detail = ex.Message,
+                currentVersion = ex.CurrentVersion
+            });
         }
     }
 });
@@ -283,21 +476,6 @@ app.Use(async (ctx, next) =>
     }
 });
 
-using (var scope = app.Services.CreateScope())
-{
-    var store = scope.ServiceProvider.GetRequiredService<ICentralStore>();
-    await store.InitializeAsync();
-    var tracker = scope.ServiceProvider.GetRequiredService<LateralMovementTracker>();
-    await tracker.LoadAsync();
-    await scope.ServiceProvider.GetRequiredService<LlmGatewayService>().InitializeAsync();
-}
-
-if (enableMtlsAuth)
-{
-    app.UseAuthentication();
-    app.UseAuthorization();
-}
-
 var securityOpts = app.Services.GetRequiredService<IOptions<SecurityOptions>>().Value;
 Log.Information(
     "Security RequireAuth={Require} EnrollmentTokenConfigured={Enroll} OperatorKeyConfigured={Op}",
@@ -306,6 +484,11 @@ Log.Information(
     !string.IsNullOrWhiteSpace(securityOpts.OperatorApiKey));
 
 var centralVersion = NTShield.Shared.ProductInfo.GetVersion();
+
+app.MapDashboardSessionEndpoints(centralVersion);
+app.MapDashboardSummaryEndpoints();
+app.MapCaptureControlPlane();
+app.MapTemporalThreatAiEndpoints();
 
 app.MapGet("/health", () => Results.Ok(new
 {
@@ -330,6 +513,8 @@ app.MapGet("/api/v1/health", (IOptions<SyslogOptions> syslog, OpenSourceSignatur
         signatures = sigs.Signatures.Count
     }
 }));
+
+app.MapGet("/api/v2/readiness", (CentralReadinessState readiness) => Results.Ok(readiness.Snapshot()));
 
 app.MapGet("/api/v1/signatures", (OpenSourceSignatureEngine sigs) =>
     Results.Ok(sigs.Signatures.Select(s => new
@@ -483,9 +668,17 @@ app.MapPost("/api/v1/agents/heartbeat", async (AgentHeartbeat hb, ICentralStore 
             return Results.Json(new { error = "agent_hash_not_approved" }, statusCode: StatusCodes.Status403Forbidden);
     }
 
-    await store.UpsertAgentAsync(hb);
     var serverUtc = DateTimeOffset.UtcNow;
-    var skew = (hb.TimestampUtc - serverUtc).TotalSeconds;
+    var skew = hb.TimestampUtc is { } timestamp && timestamp != default && timestamp != DateTimeOffset.MinValue
+        ? (timestamp - serverUtc).TotalSeconds
+        : 0;
+    // Persist the Central-calculated value, not the agent's previous heartbeat
+    // value. Temporal projection uses this provenance to assess event-time quality.
+    hb.ClockSkewSeconds = skew;
+    // Fleet freshness is receipt-time truth; a skewed endpoint clock must not
+    // make an online agent appear stale or from the future.
+    hb.TimestampUtc = serverUtc;
+    await store.UpsertAgentAsync(hb);
     var pending = await actions.GetPendingForAgentAsync(hb.AgentId);
 
     AgentPolicy? policyOut = null;
@@ -510,10 +703,19 @@ app.MapPost("/api/v1/agents/heartbeat", async (AgentHeartbeat hb, ICentralStore 
 });
 
 // Back-compat
-app.MapPost("/api/v1/heartbeat", async (AgentHeartbeat hb, ICentralStore store) =>
+app.MapPost("/api/v1/heartbeat", async (
+    AgentHeartbeat hb,
+    ICentralStore store,
+    HttpContext http) =>
 {
+    hb.AgentId = IngestTenantResolver.ResolveBoundAgentId(http, hb.AgentId);
+    var serverUtc = DateTimeOffset.UtcNow;
+    hb.ClockSkewSeconds = hb.TimestampUtc != default && hb.TimestampUtc != DateTimeOffset.MinValue
+        ? (hb.TimestampUtc - serverUtc).TotalSeconds
+        : 0;
+    hb.TimestampUtc = serverUtc;
     await store.UpsertAgentAsync(hb);
-    return Results.Ok(new { accepted = true, serverUtc = DateTimeOffset.UtcNow });
+    return Results.Ok(new { accepted = true, serverUtc, hb.ClockSkewSeconds });
 });
 
 app.MapPost("/api/v1/events/batch", async (EventsBatchRequest req, IngestService ingest, IngestTenantResolver tenantResolver, HttpRequest http) =>
@@ -526,8 +728,10 @@ app.MapPost("/api/v1/events/batch", async (EventsBatchRequest req, IngestService
         IdempotencyKey = idem,
         SecurityEvents = req.Events
     };
-    var tenantId = await tenantResolver.ResolveAsync(http.HttpContext, batch.AgentId);
-    return Results.Ok(await ingest.IngestAsync(batch, CancellationToken.None, tenantId));
+    var tenantId = await tenantResolver.ResolveAndBindAsync(http.HttpContext, batch);
+    return IngestHttpResponseMapper.ToHttpResult(
+        await ingest.IngestAsync(batch, CancellationToken.None, tenantId),
+        http.HttpContext.Response);
 });
 
 app.MapPost("/api/v1/connections/batch", async (ConnectionsBatchRequest req, IngestService ingest, IngestTenantResolver tenantResolver, HttpRequest http) =>
@@ -540,8 +744,10 @@ app.MapPost("/api/v1/connections/batch", async (ConnectionsBatchRequest req, Ing
         IdempotencyKey = idem,
         NetworkConnections = req.Connections
     };
-    var tenantId = await tenantResolver.ResolveAsync(http.HttpContext, batch.AgentId);
-    return Results.Ok(await ingest.IngestAsync(batch, CancellationToken.None, tenantId));
+    var tenantId = await tenantResolver.ResolveAndBindAsync(http.HttpContext, batch);
+    return IngestHttpResponseMapper.ToHttpResult(
+        await ingest.IngestAsync(batch, CancellationToken.None, tenantId),
+        http.HttpContext.Response);
 });
 
 app.MapPost("/api/v1/ingest", async (AgentIngestBatch? batch, IngestService ingest, IngestTenantResolver tenantResolver, HttpRequest http) =>
@@ -556,7 +762,7 @@ app.MapPost("/api/v1/ingest", async (AgentIngestBatch? batch, IngestService inge
     }
 
     batch.IdempotencyKey ??= http.Headers["Idempotency-Key"].FirstOrDefault();
-    var tenantId = await tenantResolver.ResolveAsync(http.HttpContext, batch.AgentId);
+    var tenantId = await tenantResolver.ResolveAndBindAsync(http.HttpContext, batch);
     var result = await ingest.IngestAsync(batch, CancellationToken.None, tenantId);
     Log.Information(
         "Ingest accepted={Ok} agent={AgentId} events={E} conn={C} proc={P} alerts={A} incidents={I}",
@@ -567,21 +773,37 @@ app.MapPost("/api/v1/ingest", async (AgentIngestBatch? batch, IngestService inge
         batch.Processes.Count,
         batch.Alerts.Count,
         result.CreatedIncidentIds.Count);
-    return Results.Ok(result);
+    return IngestHttpResponseMapper.ToHttpResult(result, http.HttpContext.Response);
 });
 
 // Customer workspaces, agent ownership and tenant-scoped report generation.
-app.MapGet("/api/v1/tenants", async (TenantManagementService tenants) =>
-    Results.Ok(await tenants.ListAsync()));
-
-app.MapGet("/api/v1/tenants/agents", async (ICentralStore store) => Results.Ok(new
+app.MapGet("/api/v1/tenants", async (TenantManagementService tenants, HttpContext http) =>
 {
-    agents = await store.ListAgentsAsync(),
-    assignments = await store.ListAgentAssignmentsAsync()
-}));
+    var rows = await tenants.ListAsync();
+    return Results.Ok(FilterDashboardTenants(http, rows));
+});
 
-app.MapGet("/api/v1/tenants/{id}", async (string id, TenantManagementService tenants) =>
+app.MapGet("/api/v1/tenants/agents", async (ICentralStore store, HttpContext http) =>
 {
+    var allowed = DashboardTenantGrants(http);
+    var assignments = await store.ListAgentAssignmentsAsync();
+    if (allowed is null || allowed.Contains("*"))
+        return Results.Ok(new { agents = await store.ListAgentsAsync(), assignments });
+
+    var agents = new List<object>();
+    foreach (var tenantId in allowed.Order(StringComparer.OrdinalIgnoreCase))
+        agents.AddRange(await store.ListAgentsAsync(tenantId));
+    return Results.Ok(new
+    {
+        agents = agents.DistinctBy(item => item is AgentInventoryItem agent ? agent.AgentId : item.ToString()).ToList(),
+        assignments = assignments.Where(item => allowed.Contains(item.TenantId)).ToList()
+    });
+});
+
+app.MapGet("/api/v1/tenants/{id}", async (string id, TenantManagementService tenants, HttpContext http) =>
+{
+    id = TopologyService.NormalizeTenantId(id);
+    if (!DashboardCanAccessTenant(http, id)) return Results.Forbid();
     var tenant = await tenants.GetAsync(id);
     return tenant is null ? Results.NotFound() : Results.Ok(tenant);
 });
@@ -589,22 +811,24 @@ app.MapGet("/api/v1/tenants/{id}", async (string id, TenantManagementService ten
 app.MapPost("/api/v1/tenants", async (CustomerTenant? tenant, TenantManagementService tenants, ICentralStore store, HttpContext http) =>
 {
     if (tenant is null) return Results.BadRequest(new { error = "invalid_customer" });
+    if (DashboardTenantGrants(http) is { } grants && !grants.Contains("*")) return Results.Forbid();
     var saved = await tenants.SaveAsync(tenant);
     await store.AppendAuditAsync(OperatorActor(http), "tenant.upsert", saved.TenantId, "success",
         JsonSerializer.Serialize(new { saved.Name, saved.Plan, saved.Status }), http.Connection.RemoteIpAddress?.ToString());
     return Results.Created($"/api/v1/tenants/{saved.TenantId}", saved);
-});
+}).RequireAuthorization("TenantAdmin");
 
 app.MapPut("/api/v1/tenants/{id}", async (string id, CustomerTenant? tenant, TenantManagementService tenants, ICentralStore store, HttpContext http) =>
 {
     if (tenant is null) return Results.BadRequest(new { error = "invalid_customer" });
     tenant.TenantId = id;
+    if (!DashboardCanAccessTenant(http, TopologyService.NormalizeTenantId(id))) return Results.Forbid();
     if (await tenants.GetAsync(id) is null) return Results.NotFound();
     var saved = await tenants.SaveAsync(tenant);
     await store.AppendAuditAsync(OperatorActor(http), "tenant.update", saved.TenantId, "success",
         JsonSerializer.Serialize(new { saved.Name, saved.Plan, saved.Status }), http.Connection.RemoteIpAddress?.ToString());
     return Results.Ok(saved);
-});
+}).RequireAuthorization("TenantAdmin");
 
 app.MapPut("/api/v1/tenants/{tenantId}/agents/{agentId}", async (
     string tenantId,
@@ -613,9 +837,101 @@ app.MapPut("/api/v1/tenants/{tenantId}/agents/{agentId}", async (
     ICentralStore store,
     HttpContext http) =>
 {
+    tenantId = TopologyService.NormalizeTenantId(tenantId);
+    if (!DashboardCanAccessTenant(http, tenantId)) return Results.Forbid();
     await tenants.AssignAgentAsync(tenantId, agentId);
     await store.AppendAuditAsync(OperatorActor(http), "tenant.agent.assign", agentId, "success",
         JsonSerializer.Serialize(new { tenantId = TopologyService.NormalizeTenantId(tenantId) }), http.Connection.RemoteIpAddress?.ToString());
+    return Results.NoContent();
+}).RequireAuthorization("TenantAdmin");
+
+app.MapGet("/api/v1/report-template-data-sources", (ReportTemplateService templates) =>
+    Results.Ok(templates.ListDataSources()));
+
+app.MapGet("/api/v1/report-templates", async (ReportTemplateService templates, HttpContext http) =>
+    Results.Ok(await templates.ListAsync(TopologyService.ResolveTenantId(http))));
+
+app.MapGet("/api/v1/report-templates/{id}", async (
+    string id,
+    ReportTemplateService templates,
+    HttpContext http) =>
+{
+    var template = await templates.GetAsync(TopologyService.ResolveTenantId(http), id);
+    return template is null ? Results.NotFound() : Results.Ok(template);
+});
+
+app.MapPost("/api/v1/report-templates", async (
+    ReportTemplateDefinition? template,
+    ReportTemplateService templates,
+    ICentralStore store,
+    HttpContext http) =>
+{
+    if (template is null) return Results.BadRequest(new { error = "invalid_report_template" });
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var saved = await templates.CreateAsync(tenantId, template);
+    await store.AppendAuditAsync(OperatorActor(http), "report_template.create", saved.TemplateId, "success",
+        JsonSerializer.Serialize(new { tenantId, saved.Name, saved.Version, blocks = saved.Blocks.Count }),
+        http.Connection.RemoteIpAddress?.ToString());
+    return Results.Created($"/api/v1/report-templates/{saved.TemplateId}", saved);
+});
+
+app.MapPut("/api/v1/report-templates/{id}", async (
+    string id,
+    ReportTemplateDefinition? template,
+    ReportTemplateService templates,
+    ICentralStore store,
+    HttpContext http) =>
+{
+    if (template is null) return Results.BadRequest(new { error = "invalid_report_template" });
+    var tenantId = TopologyService.ResolveTenantId(http);
+    if (ReportTemplateService.IsBuiltInId(id))
+    {
+        await store.AppendAuditAsync(OperatorActor(http), "report_template.update", id, "fail",
+            JsonSerializer.Serialize(new { tenantId, reason = "built_in_template_read_only" }),
+            http.Connection.RemoteIpAddress?.ToString());
+        return Results.Conflict(new { error = "built_in_template_read_only" });
+    }
+    var saved = await templates.UpdateAsync(tenantId, id, template);
+    if (saved is null) return Results.NotFound();
+    await store.AppendAuditAsync(OperatorActor(http), "report_template.update", saved.TemplateId, "success",
+        JsonSerializer.Serialize(new { tenantId, saved.Name, saved.Version, blocks = saved.Blocks.Count }),
+        http.Connection.RemoteIpAddress?.ToString());
+    return Results.Ok(saved);
+});
+
+app.MapPost("/api/v1/report-templates/{id}/duplicate", async (
+    string id,
+    DuplicateReportTemplateRequest? request,
+    ReportTemplateService templates,
+    ICentralStore store,
+    HttpContext http) =>
+{
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var saved = await templates.DuplicateAsync(tenantId, id, request?.Name);
+    if (saved is null) return Results.NotFound();
+    await store.AppendAuditAsync(OperatorActor(http), "report_template.duplicate", saved.TemplateId, "success",
+        JsonSerializer.Serialize(new { tenantId, sourceTemplateId = id, saved.Name }),
+        http.Connection.RemoteIpAddress?.ToString());
+    return Results.Created($"/api/v1/report-templates/{saved.TemplateId}", saved);
+});
+
+app.MapDelete("/api/v1/report-templates/{id}", async (
+    string id,
+    ReportTemplateService templates,
+    ICentralStore store,
+    HttpContext http) =>
+{
+    var tenantId = TopologyService.ResolveTenantId(http);
+    if (ReportTemplateService.IsBuiltInId(id))
+    {
+        await store.AppendAuditAsync(OperatorActor(http), "report_template.delete", id, "fail",
+            JsonSerializer.Serialize(new { tenantId, reason = "built_in_template_read_only" }),
+            http.Connection.RemoteIpAddress?.ToString());
+        return Results.Conflict(new { error = "built_in_template_read_only" });
+    }
+    if (!await templates.DeleteAsync(tenantId, id)) return Results.NotFound();
+    await store.AppendAuditAsync(OperatorActor(http), "report_template.delete", id, "success",
+        JsonSerializer.Serialize(new { tenantId }), http.Connection.RemoteIpAddress?.ToString());
     return Results.NoContent();
 });
 
@@ -631,7 +947,7 @@ app.MapPost("/api/v1/reports", async (
     var tenantId = TopologyService.ResolveTenantId(http);
     var report = await reports.GenerateAsync(tenantId, request ?? new CreateSecurityReportRequest());
     await store.AppendAuditAsync(OperatorActor(http), "report.generate", report.ReportId, "success",
-        JsonSerializer.Serialize(new { tenantId, report.PeriodStartUtc, report.PeriodEndUtc }), http.Connection.RemoteIpAddress?.ToString());
+        JsonSerializer.Serialize(new { tenantId, report.TemplateId, report.PeriodStartUtc, report.PeriodEndUtc }), http.Connection.RemoteIpAddress?.ToString());
     return Results.Created($"/api/v1/reports/{report.ReportId}", report);
 });
 
@@ -785,10 +1101,23 @@ app.MapDelete("/api/v1/workflows/{id}", async (string id, TopologyService topolo
     return Results.NoContent();
 });
 
-app.MapPost("/api/v1/incidents", async (Incident incident, ICentralStore store, LateralMovementTracker tracker) =>
+app.MapPost("/api/v1/incidents", async (
+    Incident incident,
+    ICentralStore store,
+    LateralMovementTracker tracker,
+    HttpContext http) =>
 {
-    await store.UpsertIncidentAsync(incident);
-    tracker.IngestIncidents([incident]);
+    var tenantId = TopologyService.ResolveTenantId(http);
+    var existing = await store.GetIncidentAsync(incident.IncidentId);
+    if (existing is not null &&
+        !string.Equals(existing.TenantId, tenantId, StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Conflict(new { error = "incident_id_tenant_conflict" });
+    }
+
+    incident.TenantId = tenantId;
+    await store.UpsertIncidentAsync(incident, tenantId);
+    tracker.IngestIncidents([incident], tenantId);
     Log.Warning("Incident upserted:\n{Display}", incident.FormatDisplay());
     return Results.Ok(incident);
 });
@@ -836,21 +1165,23 @@ app.MapPost("/api/v1/incidents/{id}/ai/analyze", async (
     AiAnalystProxyService analyst,
     HttpContext http) =>
 {
-    if (await store.GetIncidentAsync(id, TopologyService.ResolveTenantId(http)) is null)
+    var centralTenantId = TopologyService.ResolveTenantId(http);
+    var incident = await store.GetIncidentAsync(id, centralTenantId);
+    if (incident is null)
         return Results.NotFound(new { error = "incident_not_found" });
 
-    // The browser's tenant header is not forwarded to Brain. Until Central RBAC
-    // supplies a signed tenant claim, the mapping stays server-side in config.
-    var tenantId = analyst.TenantId;
+    // Brain tenancy is always resolved by the server-side mapping. A configured
+    // {tenant} placeholder uses the same tenant that authorized this store fetch.
+    var brainTenantId = analyst.ResolveBrainTenantId(centralTenantId);
     try
     {
-        var json = await analyst.AnalyzeIncidentAsync(id, tenantId, http.RequestAborted);
+        var json = await analyst.AnalyzeIncidentAsync(incident, centralTenantId, http.RequestAborted);
         await store.AppendAuditAsync(
             OperatorActor(http),
             "ai.incident.analyze",
             id,
             "success",
-            JsonSerializer.Serialize(new { tenantId, source = "ntshield-brain" }),
+            JsonSerializer.Serialize(new { tenantId = centralTenantId, brainTenantId, source = "ntshield-brain" }),
             http.Connection.RemoteIpAddress?.ToString());
         return Results.Content(json, "application/json", System.Text.Encoding.UTF8);
     }
@@ -861,7 +1192,7 @@ app.MapPost("/api/v1/incidents/{id}/ai/analyze", async (
             "ai.incident.analyze",
             id,
             "fail",
-            JsonSerializer.Serialize(new { tenantId, error = ex.Error }),
+            JsonSerializer.Serialize(new { tenantId = centralTenantId, brainTenantId, error = ex.Error }),
             http.Connection.RemoteIpAddress?.ToString());
         return Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode);
     }
@@ -869,20 +1200,40 @@ app.MapPost("/api/v1/incidents/{id}/ai/analyze", async (
 
 app.MapPost("/api/v1/actions", async (ResponseActionRequest request, ActionService actions, ICentralStore store, HttpContext http) =>
 {
+    if (string.IsNullOrWhiteSpace(request.TargetAgentId))
+        return Results.BadRequest(new { error = "target_agent_id_required" });
+
+    var tenantId = TopologyService.ResolveTenantId(http);
     var actor = http.Items.TryGetValue(ApiKeyAuthMiddleware.PrincipalItem, out var p) ? p?.ToString() ?? "anonymous" : "anonymous";
-    var saved = await actions.EnqueueAsync(request);
+    var saved = await actions.EnqueueForTenantAsync(request, tenantId);
+    if (saved is null) return Results.NotFound(new { error = "target_agent_not_found" });
     await store.AppendAuditAsync(
         actor == "operator" ? "operator" : actor,
         "action.enqueue",
-        request.TargetAgentId ?? request.RequestId,
+        saved.TargetAgentId ?? saved.RequestId,
         "success",
-        JsonSerializer.Serialize(new { request.ActionType, request.TargetIp, request.TargetPort, request.ServiceName, request.Approved }),
+        JsonSerializer.Serialize(new
+        {
+            tenantId,
+            saved.RequestId,
+            saved.ActionType,
+            saved.TargetIp,
+            saved.TargetPort,
+            saved.ServiceName,
+            saved.Approved
+        }),
         http.Connection.RemoteIpAddress?.ToString());
     return Results.Ok(saved);
-});
+}).RequireAuthorization("SocResponseAction");
 
-app.MapGet("/api/v1/audit", async (ICentralStore store, int take = 100) =>
-    Results.Ok(await store.ListAuditAsync(Math.Clamp(take, 1, 500))));
+app.MapGet("/api/v1/audit", async (ICentralStore store, HttpContext http, int take = 100) =>
+{
+    // The legacy audit table is global and has no trustworthy tenant column.
+    // Never expose it to a cookie session with only tenant-scoped grants.
+    if (DashboardTenantGrants(http) is { } grants && !grants.Contains("*"))
+        return Results.Forbid();
+    return Results.Ok(await store.ListAuditAsync(Math.Clamp(take, 1, 500)));
+}).RequireAuthorization("TenantAdmin");
 
 app.MapGet("/api/v1/policy", async (ICentralStore store) =>
     Results.Ok(await store.GetActivePolicyAsync()));
@@ -926,11 +1277,11 @@ app.MapPut("/api/v1/protection-pack", async (ProtectionPack pack, ICentralStore 
     return Results.Ok(new { accepted = true, policyVersion = current.PolicyVersion, pack });
 });
 
-app.MapGet("/api/v1/actions/{id}", async (string id, ActionService actions) =>
+app.MapGet("/api/v1/actions/{id}", async (string id, ActionService actions, HttpContext http) =>
 {
-    var action = await actions.GetAsync(id);
+    var action = await actions.GetForTenantAsync(id, TopologyService.ResolveTenantId(http));
     return action is null ? Results.NotFound() : Results.Ok(action);
-});
+}).RequireAuthorization("SocResponseAction");
 
 app.MapGet("/api/v1/agents", async (ICentralStore store, HttpContext http) =>
     Results.Ok(await store.ListAgentsAsync(TopologyService.ResolveTenantId(http))));
@@ -947,6 +1298,10 @@ app.MapGet("/api/v1/agents/{agentId}/metrics", async (string agentId, ICentralSt
     if (await store.GetAgentAsync(agentId, 1, tenantId) is null) return Results.NotFound();
     return Results.Ok(await store.ListAgentMetricsAsync(agentId, Math.Clamp(take, 1, 500)));
 });
+
+// Phase 2 bounded temporal attack-chain API. Kept in an endpoint extension so
+// the legacy v1 routes remain wire-compatible during frontend migration.
+app.MapTemporalThreatEndpoints();
 
 // Threat catalog + multi-host lateral tracking (detect/track only)
 app.MapGet("/api/v1/threats/catalog", (LateralMovementTracker tracker) =>
@@ -1009,24 +1364,47 @@ static string OperatorActor(HttpContext http)
         : "anonymous";
 }
 
+static bool LegacyOperatorOrSoftLab(Microsoft.AspNetCore.Authorization.AuthorizationHandlerContext context) =>
+    context.Resource is HttpContext http &&
+    (!http.RequestServices.GetRequiredService<IOptions<SecurityOptions>>().Value.RequireAuth ||
+     http.Items.TryGetValue(ApiKeyAuthMiddleware.PrincipalItem, out var principal) &&
+     string.Equals(principal?.ToString(), "operator", StringComparison.Ordinal));
+
+static HashSet<string>? DashboardTenantGrants(HttpContext http)
+{
+    var dashboardUser = http.User.Identity?.IsAuthenticated == true &&
+                        http.User.FindAll(ClaimTypes.Role).Any(claim => DashboardRoles.IsKnown(claim.Value));
+    if (!dashboardUser) return null; // legacy operator-key transition path
+    return http.User.FindAll(DashboardSessionEndpoints.TenantClaim)
+        .Select(claim => claim.Value.Trim().ToLowerInvariant())
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+}
+
+static bool DashboardCanAccessTenant(HttpContext http, string tenantId)
+{
+    var grants = DashboardTenantGrants(http);
+    return grants is null || grants.Contains("*") || grants.Contains(tenantId);
+}
+
+static IReadOnlyList<CustomerTenant> FilterDashboardTenants(
+    HttpContext http,
+    IReadOnlyList<CustomerTenant> tenants)
+{
+    var grants = DashboardTenantGrants(http);
+    return grants is null || grants.Contains("*")
+        ? tenants
+        : tenants.Where(item => grants.Contains(item.TenantId)).ToList();
+}
+
 static async Task<IReadOnlyList<ThreatCampaign>> ListTenantCampaignsAsync(
     ICentralStore store,
     LateralMovementTracker tracker,
     string tenantId,
     int take)
 {
-    var agents = await store.ListAgentsAsync(tenantId);
-    var agentIds = agents.OfType<AgentInventoryItem>()
-        .Select(agent => agent.AgentId)
-        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-    var incidents = await store.ListIncidentsAsync(500, tenantId);
-    var incidentIds = incidents.Select(item => item.IncidentId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-    return tracker.ListCampaigns(500)
-        .Where(campaign =>
-            campaign.RelatedIncidentIds.Any(incidentIds.Contains) ||
-            campaign.Hops.Any(hop =>
-                (!string.IsNullOrWhiteSpace(hop.FromAgentId) && agentIds.Contains(hop.FromAgentId)) ||
-                (!string.IsNullOrWhiteSpace(hop.ToAgentId) && agentIds.Contains(hop.ToAgentId))))
+    await tracker.LoadAsync();
+    return tracker.ListCampaigns(500, tenantId)
         .OrderByDescending(campaign => campaign.LastSeenUtc)
         .Take(Math.Clamp(take, 1, 500))
         .ToList();

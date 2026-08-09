@@ -1,0 +1,58 @@
+* { box-sizing: border-box; }
+
+html { background: #e9edf2; }
+
+body.studio-print-shell {
+  margin: 0;
+  padding: 24px;
+  background: #e9edf2;
+  color: #252c38;
+  font-family: Arial, sans-serif;
+}
+
+.studio-print-actions {
+  width: min(100%, 970px);
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 auto 14px;
+}
+
+.studio-print-actions button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 16px;
+  background: #efb900;
+  color: #202936;
+  font: 800 13px/1 Arial, sans-serif;
+  cursor: pointer;
+}
+
+.studio-print-actions button:focus-visible { outline: 3px solid #2f80ed; outline-offset: 3px; }
+.studio-print-document { width: 100%; }
+
+@page studio-a4-portrait { size: A4 portrait; margin: 0; }
+@page studio-a4-landscape { size: A4 landscape; margin: 0; }
+@page studio-letter-portrait { size: Letter portrait; margin: 0; }
+@page studio-letter-landscape { size: Letter landscape; margin: 0; }
+
+.studio-print-a4-portrait .studio-report-output { page: studio-a4-portrait; }
+.studio-print-a4-landscape .studio-report-output { page: studio-a4-landscape; }
+.studio-print-letter-portrait .studio-report-output { page: studio-letter-portrait; }
+.studio-print-letter-landscape .studio-report-output { page: studio-letter-landscape; }
+
+@media print {
+  html,
+  body.studio-print-shell { background: transparent; }
+  body.studio-print-shell { padding: 0; }
+  .studio-print-actions { display: none; }
+  .studio-print-document .studio-report-output {
+    width: 100%;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .studio-print-document .studio-output-grid { min-height: 0; }
+  .studio-output-block { break-inside: avoid; }
+}

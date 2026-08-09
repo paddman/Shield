@@ -31,6 +31,8 @@ public sealed class ResponseActionRequest
 {
     public string RequestId { get; set; } = Guid.NewGuid().ToString("N");
     public string Requester { get; set; } = string.Empty;
+    /// <summary>Server-resolved owner tenant. Client input is never trusted.</summary>
+    public string? TenantId { get; set; }
     /// <summary>Which agent should execute this action (required for firewall from Dashboard).</summary>
     public string? TargetAgentId { get; set; }
     public string ActionType { get; set; } = string.Empty;

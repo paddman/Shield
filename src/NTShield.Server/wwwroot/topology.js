@@ -35,6 +35,7 @@
   const topologyState = {
     initialized: false,
     loading: false,
+    loadGeneration: 0,
     api: null,
     toast: null,
     getTenant: () => "default",
@@ -161,17 +162,21 @@
   }
 
   async function load(options = {}) {
-    if (!topologyState.initialized || topologyState.loading) return;
+    if (!topologyState.initialized) return false;
+    const generation = ++topologyState.loadGeneration;
+    const tenantId = topologyState.getTenant();
+    const tenantRequest = path => topologyState.api(path, { headers: { "X-NTShield-Tenant": tenantId } });
     topologyState.loading = true;
     setText("#topologyStatus", "กำลังโหลดข้อมูลจาก Central…");
     setText("#workflowStatus", "กำลังโหลดข้อมูลจาก Central…");
     try {
       const [kinds, topologies, assets, workflows] = await Promise.all([
-        topologyState.api("/api/v1/topology/kinds"),
-        topologyState.api("/api/v1/topologies"),
-        topologyState.api("/api/v1/assets"),
-        topologyState.api("/api/v1/workflows")
+        tenantRequest("/api/v1/topology/kinds"),
+        tenantRequest("/api/v1/topologies"),
+        tenantRequest("/api/v1/assets"),
+        tenantRequest("/api/v1/workflows")
       ]);
+      if (generation !== topologyState.loadGeneration || tenantId !== topologyState.getTenant()) return false;
       const receivedKinds = asList(kinds).map(item => ({
         kind: value(item, "kind") || "custom",
         label: value(item, "label") || value(item, "kind") || "Custom",
@@ -200,13 +205,36 @@
       populateWorkflowSelect();
       renderTopology();
       renderWorkflow();
+      return true;
     } catch (error) {
+      if (generation !== topologyState.loadGeneration || tenantId !== topologyState.getTenant()) return false;
       topologyState.toast?.(`โหลด Topology ไม่สำเร็จ: ${error?.message || "Central unavailable"}`);
       setText("#topologyStatus", "โหลดข้อมูลไม่สำเร็จ");
       setText("#workflowStatus", "โหลดข้อมูลไม่สำเร็จ");
+      return false;
     } finally {
-      topologyState.loading = false;
+      if (generation === topologyState.loadGeneration) topologyState.loading = false;
     }
+  }
+
+  function resetTenant() {
+    if (!topologyState.initialized) return;
+    topologyState.loadGeneration += 1;
+    topologyState.loading = false;
+    topologyState.assets = [];
+    topologyState.topologies = [];
+    topologyState.workflows = [];
+    topologyState.topology = newTopologyModel();
+    topologyState.workflow = newWorkflowModel();
+    topologyState.topologySelected = null;
+    topologyState.workflowSelected = null;
+    topologyState.topologyDirty = false;
+    topologyState.workflowDirty = false;
+    populateAssetSelect();
+    populateTopologySelect();
+    populateWorkflowSelect();
+    renderTopology();
+    renderWorkflow();
   }
 
   function newTopologyModel() {
@@ -374,7 +402,7 @@
     if (!host) return;
     const query = ($("#topologyKindSearch")?.value || "").trim().toLowerCase();
     host.replaceChildren();
-    topologyState.kinds.filter(item => `${item.label} ${item.kind} ${item.category}`.toLowerCase().includes(query)).forEach(item => {
+    topologyState.kinds.filter(item => !isCentralKind(item.kind) && `${item.label} ${item.kind} ${item.category}`.toLowerCase().includes(query)).forEach(item => {
       const button = document.createElement("button");
       button.type = "button"; button.className = "topology-kind"; button.draggable = true; button.dataset.category = item.category;
       button.innerHTML = `<span class="topology-kind-icon"></span><span class="topology-kind-label"></span>`;
@@ -420,7 +448,7 @@
 
   function populateNodeKindSelect() {
     const select = $("#topologyNodeKind"); if (!select) return;
-    select.replaceChildren(...topologyState.kinds.map(item => new Option(item.label, item.kind)));
+    select.replaceChildren(...topologyState.kinds.filter(item => !isCentralKind(item.kind)).map(item => new Option(item.label, item.kind)));
   }
 
   function populateWorkflowTypeSelect() {
@@ -436,6 +464,13 @@
 
   function addTopologyNode(kind, event) {
     if (!topologyState.topology) topologyState.topology = newTopologyModel();
+    if (isCentralKind(kind)) {
+      const central = topologyState.topology.nodes.find(isCentralNode);
+      topologyState.topologySelected = central?.nodeId || null;
+      topologyState.toast?.("Infrastructure Map มี NT Shield Central อยู่แล้ว");
+      renderTopology();
+      return;
+    }
     const def = topologyState.kinds.find(item => item.kind === kind) || { kind, label: kind, category: categoryFor(kind), icon: iconFor(kind) };
     const point = event ? pointFromEvent(event, "topology") : { x: 70 + (topologyState.topology.nodes.length % 3) * 185, y: 70 + Math.floor(topologyState.topology.nodes.length / 3) * 105 };
     const node = { nodeId: id(), label: def.label, kind: def.kind, category: def.category, assetId: null, x: Math.max(10, point.x - 77), y: Math.max(10, point.y - 30), status: "unknown", telemetrySourceIds: [], metadata: {} };
@@ -543,7 +578,11 @@
   }
 
   function isCentralNode(node) {
-    return node?.nodeId === CENTRAL_NODE_ID || node?.kind === "central" || node?.metadata?.systemManaged === "true";
+    return node?.nodeId === CENTRAL_NODE_ID || isCentralKind(node?.kind) || node?.metadata?.systemManaged === "true";
+  }
+
+  function isCentralKind(kind) {
+    return String(kind || "").trim().toLowerCase() === "central";
   }
 
   function bindGraphNode(element, node, graph) {
@@ -758,5 +797,5 @@
 
   function setText(selector, text) { const node = $(selector); if (node) node.textContent = text; }
 
-  globalThis.NTShieldTopology = { init, load };
+  globalThis.NTShieldTopology = { init, load, resetTenant };
 })();

@@ -10,6 +10,13 @@ public sealed class ClickHouseOptions
     /// <summary>Database that receives NT Shield analytics events.</summary>
     public string Database { get; set; } = "ntshield";
 
+    /// <summary>
+    /// Transactional store used for tenant/control/campaign state while
+    /// ClickHouse receives append-oriented analytics. Use PostgreSQL for a
+    /// production Central; SQLite is retained for single-node labs.
+    /// </summary>
+    public string ControlProvider { get; set; } = "Sqlite";
+
     /// <summary>Keep the control-plane fallback alive if analytics writes fail.</summary>
     public bool FailWrites { get; set; }
 }

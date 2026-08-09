@@ -75,7 +75,10 @@ public sealed class IngestThreatCampaignTests
             }, CancellationToken.None);
 
             Assert.True(response.Accepted);
-            Assert.Contains("alert-alert-1", response.CreatedIncidentIds);
+            Assert.Equal("alert-alert-1", Assert.Single(response.CreatedIncidentIds));
+            var storedIncident = Assert.Single(await store.ListIncidentsAsync(10, "default"));
+            Assert.Null(storedIncident.SourceAgentId);
+            Assert.Equal("agent-dest", storedIncident.DestinationAgentId);
             var threatEvents = await store.ListSecurityEventsAsync(10);
             Assert.Contains(threatEvents, item =>
                 item.SourceIp == "203.0.113.10" &&
@@ -84,6 +87,29 @@ public sealed class IngestThreatCampaignTests
             Assert.Contains(tracker.ListCampaigns(), campaign =>
                 campaign.InvolvedIps.Contains("10.0.0.10") &&
                 campaign.InvolvedHosts.Contains("DEST-01"));
+
+            var suppressed = await ingest.IngestAsync(new AgentIngestBatch
+            {
+                AgentId = "agent-dest",
+                ComputerName = "DEST-01",
+                Alerts =
+                [
+                    new DetectionAlert
+                    {
+                        AlertId = "suppressed-1",
+                        AgentId = "agent-dest",
+                        ComputerName = "DEST-01",
+                        RuleId = "SUPPRESSED_RULE",
+                        Severity = Severity.Critical,
+                        Suppressed = true,
+                        SourceIp = "198.51.100.20"
+                    }
+                ]
+            }, CancellationToken.None);
+
+            Assert.True(suppressed.Accepted);
+            Assert.Empty(suppressed.CreatedIncidentIds);
+            Assert.Single(await store.ListIncidentsAsync(10, "default"));
         }
         finally
         {

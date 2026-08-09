@@ -29,17 +29,21 @@ public sealed class CrossHostCorrelator
         _logger = logger;
     }
 
-    public async Task<IReadOnlyList<Incident>> CorrelateAsync(AgentIngestBatch batch, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<Incident>> CorrelateAsync(
+        AgentIngestBatch batch,
+        CancellationToken cancellationToken,
+        string tenantId = "default")
     {
+        tenantId = NormalizeTenantId(tenantId);
         var incidents = new List<Incident>();
-        incidents.AddRange(BuildAlertIncidents(batch));
+        incidents.AddRange(BuildAlertIncidents(batch, tenantId));
         var authEvents = batch.SecurityEvents
             .Where(e => e.EventId is 4624 or 4625 or 4672)
             .Where(e => !string.IsNullOrWhiteSpace(e.SourceIp))
             .ToList();
 
         // Also build local-only spray incidents from this batch (destination agent view).
-        incidents.AddRange(BuildLocalSprayIncidents(batch));
+        incidents.AddRange(BuildLocalSprayIncidents(batch, tenantId));
 
         if (authEvents.Count == 0)
         {
@@ -62,7 +66,7 @@ public sealed class CrossHostCorrelator
                 var destinationIp = GuessLocalIp(batch) ?? sample.DestinationIp ?? string.Empty;
                 outbound = string.IsNullOrWhiteSpace(destinationIp)
                     ? Array.Empty<NetworkConnectionRecord>()
-                    : await _store.FindOutboundAsync(destinationIp, sample.DestinationPort, from, to);
+                    : await _store.FindOutboundAsync(destinationIp, sample.DestinationPort, from, to, tenantId);
 
                 if (!string.IsNullOrWhiteSpace(sourceIp) && outbound.Count > 0)
                 {
@@ -82,13 +86,19 @@ public sealed class CrossHostCorrelator
             }
 
             var batchOutbound = batch.NetworkConnections
-                .Where(n => n.IsNew)
+                .Where(n => !n.IsClosed)
                 .Where(n => string.Equals(n.LocalAddress, sourceIp, StringComparison.OrdinalIgnoreCase)
                             || string.Equals(n.RemoteAddress, GuessLocalIp(batch), StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             var best = outbound.Concat(batchOutbound)
-                .OrderByDescending(o => o.TimestampUtc)
+                // Attribution is evidence-time based. Choosing the newest row
+                // across the whole tolerance window can attach an unrelated
+                // later reconnect/close to an earlier authentication event.
+                .OrderBy(o => list.Min(e => Math.Abs((o.TimestampUtc - e.TimestampUtc).Ticks)))
+                .ThenBy(o => o.IsClosed ? 1 : 0)
+                .ThenByDescending(o => o.IsNew)
+                .ThenByDescending(o => o.TimestampUtc)
                 .FirstOrDefault();
 
             var failed = list.Count(e => e.EventId == 4625);
@@ -117,12 +127,13 @@ public sealed class CrossHostCorrelator
                     ? "Internal Password Spray"
                     : "Cross-host Authentication Activity";
 
-            var keyMaterial = $"{sourceIp}|{sample.ComputerName}|{best?.ProcessId}|{failed}";
+            var keyMaterial = $"{TenantKeyPrefix(tenantId)}{sourceIp}|{sample.ComputerName}|{best?.ProcessId}|{failed}";
             var correlationKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(keyMaterial))).ToLowerInvariant()[..24];
 
             var services = SplitServices(best?.ServiceNames);
             var incident = new Incident
             {
+                TenantId = tenantId,
                 IncidentId = correlationKey,
                 Title = title,
                 RuleId = success > 0 ? "SPRAY_THEN_SUCCESS" : "INTERNAL_PASSWORD_SPRAY",
@@ -185,28 +196,41 @@ public sealed class CrossHostCorrelator
         return Dedup(incidents);
     }
 
-    private static IEnumerable<Incident> BuildAlertIncidents(AgentIngestBatch batch)
+    private static IEnumerable<Incident> BuildAlertIncidents(AgentIngestBatch batch, string tenantId)
     {
-        foreach (var alert in batch.Alerts)
+        foreach (var alert in batch.Alerts.Where(item => !item.Suppressed))
         {
-            var id = "alert-" + alert.AlertId;
+            var destinationHost = string.IsNullOrWhiteSpace(alert.ComputerName)
+                ? batch.ComputerName
+                : alert.ComputerName;
+            var id = string.Equals(tenantId, "default", StringComparison.OrdinalIgnoreCase)
+                ? "alert-" + alert.AlertId
+                : $"alert-{tenantId}-{alert.AlertId}";
             yield return new Incident
             {
+                TenantId = tenantId,
                 IncidentId = id,
-                Title = alert.Title,
+                Title = string.IsNullOrWhiteSpace(alert.Title)
+                    ? (string.IsNullOrWhiteSpace(alert.RuleName) ? alert.RuleId : alert.RuleName)
+                    : alert.Title,
                 RuleId = alert.RuleId,
                 Severity = alert.Severity,
-                SourceHost = alert.ComputerName,
-                SourceAgentId = alert.AgentId,
+                SourceIp = alert.SourceIp,
+                DestinationIp = alert.DestinationIp,
+                DestinationHost = destinationHost,
+                DestinationAgentId = alert.AgentId,
+                Username = alert.Username,
                 ProcessPath = alert.FilePath,
                 ExecutableSha256 = alert.FileSha256,
+                FailedAttempts = alert.EventCount,
+                DistinctUsernames = alert.DistinctUserCount,
                 FirstSeen = alert.TimestampUtc,
                 LastSeen = alert.TimestampUtc,
                 Description = alert.Description,
                 IncidentScore = alert.IncidentScore,
                 DetectionStage = alert.DetectionStage,
                 Features = new Dictionary<string, double>(alert.Features),
-                AssetId = alert.AssetId ?? alert.ComputerName,
+                AssetId = alert.AssetId ?? destinationHost,
                 ObserveBaseline = alert.ObserveBaseline,
                 EvidenceJson = alert.EvidenceJson,
                 CorrelationKey = id,
@@ -222,7 +246,7 @@ public sealed class CrossHostCorrelator
         }
     }
 
-    private static List<Incident> BuildLocalSprayIncidents(AgentIngestBatch batch)
+    private static List<Incident> BuildLocalSprayIncidents(AgentIngestBatch batch, string tenantId)
     {
         var fails = batch.SecurityEvents.Where(e => e.EventId == 4625).ToList();
         if (fails.Count < 20)
@@ -260,10 +284,11 @@ public sealed class CrossHostCorrelator
                 string.Equals(e.SourceIp, g.Key, StringComparison.OrdinalIgnoreCase));
 
             var id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-                $"local|{g.Key}|{sample.ComputerName}|{events.Count}"))).ToLowerInvariant()[..24];
+                $"{TenantKeyPrefix(tenantId)}local|{g.Key}|{sample.ComputerName}|{events.Count}"))).ToLowerInvariant()[..24];
 
             list.Add(new Incident
             {
+                TenantId = tenantId,
                 IncidentId = id,
                 Title = "Internal Password Spray",
                 RuleId = "INTERNAL_PASSWORD_SPRAY",
@@ -316,4 +341,10 @@ public sealed class CrossHostCorrelator
             .GroupBy(i => i.IncidentId)
             .Select(g => g.OrderByDescending(x => x.FailedAttempts).First())
             .ToList();
+
+    private static string TenantKeyPrefix(string tenantId) =>
+        string.Equals(tenantId, "default", StringComparison.OrdinalIgnoreCase) ? string.Empty : tenantId + "|";
+
+    private static string NormalizeTenantId(string? tenantId) =>
+        string.IsNullOrWhiteSpace(tenantId) ? "default" : tenantId.Trim().ToLowerInvariant();
 }

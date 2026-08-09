@@ -46,9 +46,10 @@ public sealed class LateralMovementTracker
             {
                 var c = JsonSerializer.Deserialize<ThreatCampaign>(json, JsonOptions);
                 if (c is null || string.IsNullOrWhiteSpace(c.CampaignId)) continue;
+                c.TenantId = NormalizeTenantId(c.TenantId);
                 _campaigns[c.CampaignId] = c;
                 foreach (var ip in c.InvolvedIps)
-                    IndexIp(ip, c.CampaignId);
+                    IndexIp(c.TenantId, ip, c.CampaignId);
             }
 
             // Campaign persistence was added after incidents. Rebuild the in-memory
@@ -60,7 +61,7 @@ public sealed class LateralMovementTracker
                 var incidents = await _store.ListIncidentsAsync(500);
                 foreach (var incident in incidents)
                 {
-                    var campaign = MergeIncident(incident);
+                    var campaign = MergeIncident(incident, incident.TenantId);
                     if (campaign is not null)
                     {
                         Persist(campaign);
@@ -79,13 +80,17 @@ public sealed class LateralMovementTracker
         }
     }
 
-    public IReadOnlyList<ThreatCampaign> IngestIncidents(IEnumerable<Incident> incidents)
+    public IReadOnlyList<ThreatCampaign> IngestIncidents(
+        IEnumerable<Incident> incidents,
+        string tenantId = "default")
     {
         _ = LoadAsync(); // fire-and-forget ensure load
+        tenantId = NormalizeTenantId(tenantId);
         var updated = new List<ThreatCampaign>();
         foreach (var incident in incidents)
         {
-            var campaign = MergeIncident(incident);
+            incident.TenantId = tenantId;
+            var campaign = MergeIncident(incident, tenantId);
             if (campaign is not null)
             {
                 updated.Add(campaign);
@@ -94,7 +99,7 @@ public sealed class LateralMovementTracker
         }
 
         // Second pass: link hop chains when a destination later becomes a source
-        LinkPivotChains();
+        LinkPivotChains(tenantId);
         return updated
             .GroupBy(c => c.CampaignId)
             .Select(g => g.Last())
@@ -115,29 +120,35 @@ public sealed class LateralMovementTracker
         }
     }
 
-    public IReadOnlyList<ThreatCampaign> ListCampaigns(int take = 100) =>
+    public IReadOnlyList<ThreatCampaign> ListCampaigns(int take = 100, string tenantId = "default") =>
         _campaigns.Values
+            .Where(c => string.Equals(c.TenantId, NormalizeTenantId(tenantId), StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(c => c.LastSeenUtc)
             .Take(Math.Clamp(take, 1, 500))
             .ToList();
 
-    public ThreatCampaign? GetCampaign(string id) =>
-        _campaigns.TryGetValue(id, out var c) ? c : null;
+    public ThreatCampaign? GetCampaign(string id, string tenantId = "default") =>
+        _campaigns.TryGetValue(id, out var c) &&
+        string.Equals(c.TenantId, NormalizeTenantId(tenantId), StringComparison.OrdinalIgnoreCase)
+            ? c
+            : null;
 
     /// <summary>
     /// Find campaigns that touch a given IP or host (track threat onto other machines).
     /// </summary>
-    public IReadOnlyList<ThreatCampaign> FindByHostOrIp(string hostOrIp)
+    public IReadOnlyList<ThreatCampaign> FindByHostOrIp(string hostOrIp, string tenantId = "default")
     {
         if (string.IsNullOrWhiteSpace(hostOrIp))
         {
             return [];
         }
 
+        tenantId = NormalizeTenantId(tenantId);
         return _campaigns.Values
             .Where(c =>
-                c.InvolvedIps.Any(ip => string.Equals(ip, hostOrIp, StringComparison.OrdinalIgnoreCase)) ||
-                c.InvolvedHosts.Any(h => string.Equals(h, hostOrIp, StringComparison.OrdinalIgnoreCase)))
+                string.Equals(c.TenantId, tenantId, StringComparison.OrdinalIgnoreCase) &&
+                (c.InvolvedIps.Any(ip => string.Equals(ip, hostOrIp, StringComparison.OrdinalIgnoreCase)) ||
+                 c.InvolvedHosts.Any(h => string.Equals(h, hostOrIp, StringComparison.OrdinalIgnoreCase))))
             .OrderByDescending(c => c.LastSeenUtc)
             .ToList();
     }
@@ -155,9 +166,11 @@ public sealed class LateralMovementTracker
         int baselineSamples,
         string model,
         DateTimeOffset observedAtUtc,
-        IEnumerable<string>? signals = null)
+        IEnumerable<string>? signals = null,
+        string tenantId = "default")
     {
         if (string.IsNullOrWhiteSpace(agentId)) return 0;
+        tenantId = NormalizeTenantId(tenantId);
 
         var cleanSignals = (signals ?? [])
             .Where(signal => !string.IsNullOrWhiteSpace(signal))
@@ -168,7 +181,9 @@ public sealed class LateralMovementTracker
         var updated = 0;
         lock (_sync)
         {
-            foreach (var campaign in _campaigns.Values.Where(c => c.Hops.Any(h =>
+            foreach (var campaign in _campaigns.Values.Where(c =>
+                         string.Equals(c.TenantId, tenantId, StringComparison.OrdinalIgnoreCase) &&
+                         c.Hops.Any(h =>
                          string.Equals(h.FromAgentId, agentId, StringComparison.OrdinalIgnoreCase) ||
                          string.Equals(h.ToAgentId, agentId, StringComparison.OrdinalIgnoreCase))))
             {
@@ -213,8 +228,9 @@ public sealed class LateralMovementTracker
         return updated;
     }
 
-    private ThreatCampaign? MergeIncident(Incident incident)
+    private ThreatCampaign? MergeIncident(Incident incident, string tenantId)
     {
+        tenantId = NormalizeTenantId(tenantId);
         var fromIp = incident.SourceIp;
         var toIp = incident.DestinationIp ?? incident.DestinationHost;
         if (string.IsNullOrWhiteSpace(fromIp) && string.IsNullOrWhiteSpace(toIp))
@@ -247,12 +263,13 @@ public sealed class LateralMovementTracker
         ThreatCampaign? campaign = null;
         lock (_sync)
         {
-            campaign = FindRelatedCampaign(fromIp, toIp, hop.TimestampUtc);
+            campaign = FindRelatedCampaign(tenantId, fromIp, toIp, hop.TimestampUtc);
             if (campaign is null)
             {
                 campaign = new ThreatCampaign
                 {
-                    CampaignId = ShortId($"{fromIp}|{toIp}|{incident.RuleId}|{hop.TimestampUtc:yyyyMMddHH}"),
+                    TenantId = tenantId,
+                    CampaignId = ShortId($"{tenantId}|{fromIp}|{toIp}|{incident.RuleId}|{hop.TimestampUtc:yyyyMMddHH}"),
                     Title = BuildTitle(incident),
                     Severity = incident.Severity,
                     FirstSeenUtc = incident.FirstSeen ?? hop.TimestampUtc,
@@ -291,8 +308,8 @@ public sealed class LateralMovementTracker
                 : BuildTitle(incident);
             campaign.Summary = BuildSummary(campaign);
 
-            IndexIp(fromIp, campaign.CampaignId);
-            IndexIp(toIp, campaign.CampaignId);
+            IndexIp(tenantId, fromIp, campaign.CampaignId);
+            IndexIp(tenantId, toIp, campaign.CampaignId);
         }
 
         _logger.LogWarning(
@@ -306,8 +323,9 @@ public sealed class LateralMovementTracker
         return campaign;
     }
 
-    private void LinkPivotChains()
+    private void LinkPivotChains(string? tenantId = null)
     {
+        var normalizedTenant = tenantId is null ? null : NormalizeTenantId(tenantId);
         lock (_sync)
         {
             // If campaign1 ends at IP X and campaign2 starts at X within tolerance, merge into campaign1
@@ -321,6 +339,13 @@ public sealed class LateralMovementTracker
                     var a = list[i];
                     var b = list[j];
                     if (a.CampaignId == b.CampaignId)
+                    {
+                        continue;
+                    }
+
+                    if (!string.Equals(a.TenantId, b.TenantId, StringComparison.OrdinalIgnoreCase) ||
+                        (normalizedTenant is not null &&
+                         !string.Equals(a.TenantId, normalizedTenant, StringComparison.OrdinalIgnoreCase)))
                     {
                         continue;
                     }
@@ -364,11 +389,20 @@ public sealed class LateralMovementTracker
         }
     }
 
-    private ThreatCampaign? FindRelatedCampaign(string? fromIp, string? toIp, DateTimeOffset ts)
+    private ThreatCampaign? FindRelatedCampaign(
+        string tenantId,
+        string? fromIp,
+        string? toIp,
+        DateTimeOffset ts)
     {
         var window = TimeSpan.FromMinutes(60);
         foreach (var c in _campaigns.Values)
         {
+            if (!string.Equals(c.TenantId, tenantId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (ts < c.FirstSeenUtc - window || ts > c.LastSeenUtc + window)
             {
                 continue;
@@ -384,14 +418,15 @@ public sealed class LateralMovementTracker
         return null;
     }
 
-    private void IndexIp(string? ip, string campaignId)
+    private void IndexIp(string tenantId, string? ip, string campaignId)
     {
         if (string.IsNullOrWhiteSpace(ip))
         {
             return;
         }
 
-        _ipToCampaigns.AddOrUpdate(ip,
+        var key = $"{NormalizeTenantId(tenantId)}\n{ip}";
+        _ipToCampaigns.AddOrUpdate(key,
             _ => [campaignId],
             (_, list) =>
             {
@@ -477,6 +512,9 @@ public sealed class LateralMovementTracker
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(material));
         return Convert.ToHexString(hash).ToLowerInvariant()[..20];
     }
+
+    private static string NormalizeTenantId(string? tenantId) =>
+        string.IsNullOrWhiteSpace(tenantId) ? "default" : tenantId.Trim().ToLowerInvariant();
 
     private static void AddUnique(List<string> list, string? value)
     {

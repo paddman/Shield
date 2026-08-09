@@ -7,6 +7,8 @@ namespace NTShield.Shared.Models;
 /// </summary>
 public sealed class Incident
 {
+    /// <summary>Immutable Central tenant provenance stamped when the incident is created.</summary>
+    public string TenantId { get; set; } = "default";
     public string IncidentId { get; set; } = Guid.NewGuid().ToString("N");
     public string Title { get; set; } = string.Empty;
     public string RuleId { get; set; } = string.Empty;

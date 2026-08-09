@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using NTShield.Server.Data;
+using NTShield.Server.Security;
 using NTShield.Shared.Models;
 
 namespace NTShield.Server.Services;
@@ -7,6 +8,11 @@ namespace NTShield.Server.Services;
 public sealed class TopologyValidationException : Exception
 {
     public TopologyValidationException(string message) : base(message) { }
+}
+
+public sealed class TenantAccessDeniedException : Exception
+{
+    public TenantAccessDeniedException(string message) : base(message) { }
 }
 
 /// <summary>
@@ -30,7 +36,19 @@ public sealed class TopologyService
     {
         var raw = context.Request.Headers["X-NTShield-Tenant"].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(raw)) raw = "default";
-        return NormalizeTenantId(raw);
+        var tenantId = NormalizeTenantId(raw);
+
+        var dashboardUser = context.User.Identity?.IsAuthenticated == true &&
+                            context.User.FindAll(System.Security.Claims.ClaimTypes.Role)
+                                .Any(claim => DashboardRoles.IsKnown(claim.Value));
+        if (!dashboardUser) return tenantId;
+
+        var allowed = context.User.FindAll(DashboardSessionEndpoints.TenantClaim)
+            .Select(claim => claim.Value)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!allowed.Contains("*") && !allowed.Contains(tenantId))
+            throw new TenantAccessDeniedException("The authenticated operator is not assigned to this tenant.");
+        return tenantId;
     }
 
     public static string NormalizeTenantId(string value)

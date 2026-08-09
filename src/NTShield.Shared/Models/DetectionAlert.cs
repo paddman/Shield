@@ -4,6 +4,8 @@ namespace NTShield.Shared.Models;
 
 public sealed class DetectionAlert
 {
+    /// <summary>Immutable Central tenant provenance stamped during ingest.</summary>
+    public string TenantId { get; set; } = "default";
     public long Id { get; set; }
     public string AlertId { get; set; } = Guid.NewGuid().ToString("N");
     public DateTimeOffset TimestampUtc { get; set; } = DateTimeOffset.UtcNow;

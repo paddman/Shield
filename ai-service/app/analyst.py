@@ -181,7 +181,12 @@ class SentinelBrain:
         playbooks: list[RetrievedPlaybook],
     ) -> tuple[list[SpecialistFinding], tuple[int, int, int]]:
         groups: dict[str, set[EvidenceSource]] = {
-            "network": {EvidenceSource.SURICATA, EvidenceSource.ZEEK, EvidenceSource.THREAT_INTEL},
+            "network": {
+                EvidenceSource.SURICATA,
+                EvidenceSource.ZEEK,
+                EvidenceSource.THREAT_INTEL,
+                EvidenceSource.TEMPORAL_CHAIN,
+            },
             "endpoint": {
                 EvidenceSource.INCIDENT,
                 EvidenceSource.ENDPOINT,
@@ -577,6 +582,7 @@ class SentinelBrain:
                 "asm_findings",
                 "threat_intel",
                 "deception_hits",
+                "structured_evidence",
                 "raw_evidence",
             }
         }

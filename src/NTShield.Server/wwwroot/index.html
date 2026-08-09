@@ -8,11 +8,12 @@
   <title>NT Shield Control Center</title>
   <link rel="icon" type="image/svg+xml" href="assets/ntshield-app-icon.svg">
   <link rel="stylesheet" href="assets/fonts/fonts.css">
-  <link rel="stylesheet" href="styles.css?v=20260807-ai-investigator-1">
+  <link rel="stylesheet" href="styles.css?v=20260808-phase1-2">
   <link rel="stylesheet" href="topology.css">
-  <link rel="stylesheet" href="defense-map.css?v=20260807-moving-ip-labels">
-  <link rel="stylesheet" href="tenant-report.css?v=20260807-tenant-report">
-  <link rel="stylesheet" href="threat-campaign.css?v=20260807-threat-timeline-1">
+  <link rel="stylesheet" href="defense-map.css?v=20260808-phase1-2">
+  <link rel="stylesheet" href="tenant-report.css?v=20260808-studio-1">
+  <link rel="stylesheet" href="report-studio.css?v=20260808-studio-1">
+  <link rel="stylesheet" href="threat-campaign.css?v=20260808-temporal-chain-2">
 </head>
 <body>
   <div id="loginView" class="login-shell">
@@ -66,12 +67,18 @@
         </div>
 
         <div class="login-options">
-          <label><input id="rememberKey" type="checkbox"> จดจำในเบราว์เซอร์นี้</label>
+          <label><input id="rememberKey" type="checkbox"> จดจำชื่อผู้ใช้ (API key จะถูกแลกเป็น HttpOnly session)</label>
         </div>
         <p id="loginMessage" class="form-message" role="status" aria-live="polite"></p>
         <button id="loginButton" class="primary-login" type="submit"><span>ENTER CONTROL CENTER</span><b aria-hidden="true">→</b></button>
+        <div id="localLoginPanel" class="local-login-panel" hidden>
+          <div class="or"><span>Local break-glass</span></div>
+          <div class="field"><label for="localPassword">Local password</label><span class="input-wrap"><b aria-hidden="true">••</b><input id="localPassword" type="password" autocomplete="current-password" maxlength="256" placeholder="Local operator password"></span></div>
+          <div class="field"><label for="localTotp">TOTP code</label><span class="input-wrap"><b aria-hidden="true">#</b><input id="localTotp" inputmode="numeric" autocomplete="one-time-code" maxlength="12" pattern="[0-9 ]*" placeholder="6-digit code"></span></div>
+          <button id="localLoginButton" class="nt-account" type="button">Login with local account</button>
+        </div>
         <div class="or"><span>หรือ</span></div>
-        <button id="ntAccountButton" class="nt-account" type="button"><span aria-hidden="true">♢</span> Login with NT Account</button>
+        <button id="ntAccountButton" class="nt-account" type="button" disabled><span aria-hidden="true">♢</span> Login with NT Account</button>
         <p class="login-foot"><i></i> TLS ENCRYPTED <span>•</span> NT Shield Central <span>•</span> Local-first</p>
       </form>
     </section>
@@ -85,6 +92,7 @@
         <button class="active" data-nav="overview">Dashboard</button>
         <button data-nav="incidents">Incidents</button>
         <button data-nav="threats">Threats</button>
+        <button data-nav="forensics">Forensics</button>
         <button data-nav="assets">Assets</button>
         <button data-nav="topology">Topology</button>
         <button data-nav="customers">Customers</button>
@@ -106,6 +114,7 @@
         <button class="active" data-nav="overview"><span>⌂</span> Overview</button>
         <button data-nav="incidents"><span>⚠</span> Incidents <b id="incidentNavCount">0</b></button>
         <button data-nav="threats"><span>⌁</span> Threats</button>
+        <button data-nav="forensics"><span>⌕</span> Forensics</button>
         <button data-nav="assets"><span>▣</span> Assets</button>
         <button data-nav="topology"><span>⌘</span> Topology</button>
         <button data-nav="customers"><span>◫</span> Customers</button>
@@ -125,30 +134,36 @@
     </aside>
 
     <main class="workspace">
+      <div id="pageLoadStatus" class="page-load-status" role="status" aria-live="polite" hidden></div>
       <section class="page active global-defense-page" data-page="overview" aria-labelledby="overviewTitle">
         <div id="globalDefenseStage" class="global-defense-stage">
           <div class="defense-atmosphere" aria-hidden="true"><i></i><i></i><i></i><span></span></div>
 
           <header class="defense-copy">
-            <p class="eyebrow">AI CYBER DEFENSE</p>
-            <h1 id="overviewTitle">AI AGENTS DEFEND.<br>AI THREATS DETECTED.<br><strong>WE SECURE EVERYWHERE.</strong></h1>
-            <p>Autonomous AI Defense Network ปกป้อง Endpoint, Server, Application, Cloud และข้อมูลสำคัญตลอด 24×7</p>
+            <div class="overview-mode-switch" role="group" aria-label="รูปแบบ Dashboard">
+              <button type="button" data-overview-mode="soc" aria-pressed="true">SOC</button>
+              <button type="button" data-overview-mode="executive" aria-pressed="false">Executive</button>
+            </div>
+            <p class="eyebrow">UNIFIED DEFENSE OPERATIONS</p>
+            <h1 id="overviewTitle">สถานการณ์ที่ต้องตัดสินใจ<br><strong>ในมุมมองเดียว</strong></h1>
+            <p id="overviewPostureReason">กำลังตรวจ posture และความสดของ telemetry จาก Central…</p>
+            <p id="overviewVisibilityGaps" class="overview-visibility-gaps" role="status" aria-live="polite" hidden></p>
           </header>
 
           <article class="defense-panel telemetry-panel">
             <div class="defense-panel-title"><h2>GLOBAL THREAT TELEMETRY <span>• LIVE FEED</span></h2><small id="centralVersion">Central v—</small></div>
             <div class="telemetry-metrics">
-              <span><b id="defenseThreatEvents">0</b><small>Threat Events</small></span>
-              <span><b id="defenseCorrelated">0</b><small>Correlated</small></span>
-              <span><b id="defenseScore">100%</b><small>Defense Score</small></span>
-              <span><b id="defenseAssets">0</b><small>Assets Protected</small></span>
-              <span><b id="defenseMonitoring">0/0</b><small>AI Monitoring</small></span>
+              <span><b id="defenseThreatEvents">—</b><small>Open Incidents</small></span>
+              <span><b id="defenseCorrelated">—</b><small>Active Campaigns</small></span>
+              <span><b id="defenseScore">—</b><small>Critical / High</small></span>
+              <span><b id="defenseAssets">—</b><small>Affected Assets</small></span>
+              <span><b id="defenseMonitoring">—/—</b><small>Agents Online</small></span>
             </div>
           </article>
 
           <article class="defense-panel active-threat-panel">
-            <div class="defense-panel-title"><h2>ACTIVE THREATS</h2><span><i></i> LIVE</span></div>
-            <div id="defenseThreatList" class="defense-threat-list"><p class="defense-empty">กำลังรับข้อมูลจาก Central…</p></div>
+            <div class="defense-panel-title"><h2>ACTIVE THREAT QUEUE</h2><button id="defenseThreatViewAll" class="defense-panel-link" type="button">Open incidents</button></div>
+            <div id="defenseThreatList" class="defense-threat-list" role="group" aria-label="Active threat investigations"><p class="defense-empty">กำลังรับข้อมูลจาก Central…</p></div>
           </article>
 
           <div class="defense-globe-wrap" aria-label="Animated global threat and defense map">
@@ -198,13 +213,43 @@
           <article class="defense-panel defense-impact-panel dashboard-link-panel" data-dashboard-link="reports" tabindex="0" role="button" aria-label="เปิดหน้า Reports">
             <div class="defense-panel-title"><h2>DEFENSE IMPACT</h2><span><i></i> LIVE</span></div>
             <svg id="defenseImpactChart" viewBox="0 0 300 125" preserveAspectRatio="none" aria-label="Seven day defense impact"><defs><linearGradient id="defenseImpactFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffc400" stop-opacity=".28"/><stop offset="1" stop-color="#ffc400" stop-opacity="0"/></linearGradient></defs><path id="defenseImpactArea" d="M0 115 L300 115 Z"/><polyline id="defenseImpactLine" points="0,115 300,115"/><g id="defenseImpactDots"></g></svg>
-            <div class="defense-impact-score"><b id="defenseNeutralized">100%</b><span>Current Defense<br>Score</span></div>
+            <div class="defense-impact-score"><b id="defenseNeutralized">—</b><span>Current security<br>posture</span></div>
           </article>
+
+          <section class="defense-panel executive-overview-panel" aria-labelledby="executiveOverviewTitle">
+            <header class="executive-posture">
+              <div><p class="eyebrow">EXECUTIVE POSTURE</p><h2 id="executiveOverviewTitle">Security posture</h2><p id="executivePostureReason">กำลังรวบรวมข้อมูล…</p></div>
+              <strong id="executivePostureState" data-tone="unknown">Checking</strong>
+            </header>
+            <div class="executive-risk-grid">
+              <article><small>Critical open</small><b id="executiveCriticalOpen">—</b><span>ต้อง triage ก่อน</span></article>
+              <article><small>High open</small><b id="executiveHighOpen">—</b><span>อยู่ในคิวตรวจสอบ</span></article>
+              <article><small>Active campaigns</small><b id="executiveCampaigns">—</b><span>temporal chains</span></article>
+              <article><small>Assets affected</small><b id="executiveAffectedAssets">—</b><span>measured business exposure</span></article>
+              <article><small>Agent coverage</small><b id="executiveCoverage">—</b><span id="executiveCoverageMeta">ยังไม่มีข้อมูล</span></article>
+            </div>
+            <div class="executive-lifecycle-grid" aria-label="Security operations lifecycle metrics">
+              <article><small>MTTD</small><b id="executiveMttd">—</b><span id="executiveMttdMeta">Not measured</span></article>
+              <article><small>MTTR</small><b id="executiveMttr">—</b><span id="executiveMttrMeta">Not measured</span></article>
+              <article><small>SLA</small><b id="executiveSla">—</b><span id="executiveSlaMeta">Not tracked</span></article>
+              <p id="executiveMetricGap">Telemetry gap: detection, acknowledgement, resolution and SLA lifecycle timestamps are not available. NT Shield will not infer MTTD/MTTR from First Seen → Last Seen.</p>
+            </div>
+            <div class="executive-trend-card">
+              <div><p class="eyebrow">ACTIVITY TREND</p><h3>Incident + campaign volume</h3></div>
+              <span id="executiveFreshness">Waiting for telemetry</span>
+              <svg id="executiveTrendChart" viewBox="0 0 700 180" preserveAspectRatio="none" aria-label="Incident and campaign trend"><g id="executiveTrendGrid"></g><polyline id="executiveIncidentTrend" points=""></polyline><polyline id="executiveCampaignTrend" points=""></polyline></svg>
+              <div class="executive-trend-legend"><span><i class="incident"></i>Incidents</span><span><i class="campaign"></i>Campaigns</span></div>
+            </div>
+          </section>
         </div>
       </section>
 
       <section class="page" data-page="incidents" aria-labelledby="incidentsTitle">
         <div class="page-heading"><div><p class="eyebrow">INVESTIGATE</p><h1 id="incidentsTitle">Incidents</h1><p>เหตุการณ์ที่ Central เชื่อมโยงจากหลาย Agent</p></div><span id="incidentPageCount" class="count-pill">0 incidents</span></div>
+        <article id="incidentDrilldown" class="card incident-drilldown" aria-labelledby="incidentDrilldownTitle" hidden>
+          <div><p class="eyebrow">SELECTED INVESTIGATION</p><h2 id="incidentDrilldownTitle">Incident</h2><p id="incidentDrilldownMeta">กำลังโหลดรายละเอียด…</p></div>
+          <div><button id="incidentViewChain" class="button-secondary" type="button">View Temporal Chain</button><button id="incidentAskAi" class="button-primary" type="button">Ask AI Analyst</button></div>
+        </article>
         <article class="card table-card"><div class="table-toolbar"><input id="incidentSearch" type="search" placeholder="ค้นหา Incident, host, IP หรือ user"><select id="severityFilter"><option value="">ทุกระดับ</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select></div><div class="table-scroll"><table><thead><tr><th>Severity</th><th>Incident</th><th>Source IP / Host</th><th>Destination IP / Host</th><th>Time</th></tr></thead><tbody id="incidentTable"></tbody></table></div></article>
       </section>
 
@@ -213,7 +258,7 @@
           <div><p class="eyebrow">CORRELATE</p><h1 id="threatsTitle">Threat Campaigns</h1><p>เส้นทางและรูปแบบการโจมตีข้ามเครื่อง</p></div>
           <div class="threat-heading-actions">
             <label class="compact-field"><span>Tenant</span><span id="threatTenantName" class="threat-tenant-name">Default customer</span></label>
-            <label class="compact-field"><span>Window</span><select id="threatTimeWindow"><option value="24">Last 24 hours</option><option value="72">Last 3 days</option><option value="168">Last 7 days</option></select></label>
+            <label class="compact-field"><span>Window</span><select id="threatTimeWindow"><option value="15m">Last 15 minutes</option><option value="1h">Last hour</option><option value="24h" selected>Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label>
             <button id="threatRefresh" class="button-secondary" type="button"><span aria-hidden="true">↻</span> Refresh</button>
             <span id="threatPageCount" class="count-pill">0 threats</span>
           </div>
@@ -228,16 +273,17 @@
           </aside>
 
           <section class="card threat-path-panel" aria-labelledby="threatPathTitle">
-            <div class="threat-path-header"><div><div class="threat-path-label"><span class="live-dot"></span> SELECTED CAMPAIGN</div><h2 id="threatPathTitle">Select a campaign</h2><p id="threatPathMeta">เลือก Campaign เพื่อดูเส้นทางโจมตีที่ Central เชื่อมโยงได้</p></div><div class="threat-path-actions"><span id="threatPathStatus" class="threat-status-chip">Waiting</span><button id="threatFitPath" class="icon-button" type="button" aria-label="Fit attack path">⌗</button></div></div>
+            <div class="threat-path-header"><div><div class="threat-path-label"><span class="live-dot"></span> SELECTED CAMPAIGN</div><h2 id="threatPathTitle">Select a campaign</h2><p id="threatPathMeta">เลือก Campaign เพื่อดูเส้นทางโจมตีที่ Central เชื่อมโยงได้</p></div><div class="threat-path-actions"><span id="threatPathStatus" class="threat-status-chip">Waiting</span><button id="threatOpenForensics" class="button-secondary" type="button" disabled>Forensics</button><button id="threatAskAi" class="button-secondary" type="button" disabled>Ask AI</button><button id="threatFitPath" class="icon-button" type="button" aria-label="Fit attack path">⌗</button></div></div>
             <div id="threatGraphViewport" class="threat-graph-viewport">
               <div class="threat-graph-toolbar"><span><i class="graph-legend-dot observed"></i> Observed</span><span><i class="graph-legend-line inferred"></i> Inferred</span><span id="threatEvidenceSummary"><i class="graph-legend-dot evidence"></i> Evidence 0</span></div>
               <div id="threatGraphEmpty" class="threat-graph-empty" hidden><div class="threat-empty-mark">⌁</div><h3>ยังไม่มีเส้นทางที่เชื่อมโยงได้</h3><p>เมื่อ Central พบความสัมพันธ์ข้าม Host จะแสดง Attack Path และหลักฐานในพื้นที่นี้</p></div>
               <div id="threatGraphStage" class="threat-graph-stage" hidden>
-                <svg id="threatGraphLines" class="threat-graph-lines" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="threatArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ad7b00"></path></marker></defs><g id="threatGraphLineGroup"></g></svg>
+                <svg id="threatGraphLines" class="threat-graph-lines" viewBox="0 0 1000 300" preserveAspectRatio="none" role="group" aria-label="Threat correlation edges"><defs><marker id="threatArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ad7b00"></path></marker></defs><g id="threatGraphLineGroup"></g></svg>
                 <div id="threatGraphNodes" class="threat-graph-nodes"></div>
               </div>
             </div>
             <div id="threatCampaignSummary" class="threat-campaign-summary" hidden></div>
+            <div id="threatAiExplain" class="threat-ai-explain" role="status" aria-live="polite" hidden></div>
           </section>
 
           <aside class="card threat-inspector" aria-label="Campaign inspector">
@@ -247,10 +293,53 @@
         </div>
 
         <section class="card threat-timeline-panel" aria-labelledby="threatTimelineTitle">
-          <div class="threat-timeline-header"><div><span class="section-kicker">CORRELATION TIMELINE</span><h2 id="threatTimelineTitle">Campaign timeline</h2></div><span id="threatTimelineWindow">UTC window —</span></div>
+          <div class="threat-timeline-header"><div><span class="section-kicker">CORRELATION TIMELINE</span><h2 id="threatTimelineTitle">Campaign timeline</h2></div><div class="threat-time-scrubber"><label for="threatTimeScrubber">Playback cutoff <output id="threatTimeScrubberValue">100%</output></label><input id="threatTimeScrubber" type="range" min="5" max="100" step="5" value="100"></div><div class="threat-page-actions"><span id="threatTimelineWindow">UTC window —</span><button id="threatTimelineMore" class="button-secondary threat-page-more" type="button" hidden>Load more evidence</button></div></div>
           <div id="threatTimelineExplain" class="threat-timeline-explainer" hidden></div>
           <div id="threatTimeline" class="threat-timeline"><div class="threat-timeline-empty">เลือก Campaign เพื่อดู event sequence</div></div>
         </section>
+
+        <section class="card threat-contacts-panel" aria-labelledby="threatContactsTitle">
+          <div class="threat-contacts-header"><div><span class="section-kicker">RECURRING CONTACTS</span><h2 id="threatContactsTitle">Network contact evidence</h2></div><div class="threat-page-actions"><span id="threatContactsCount">0 contacts</span><button id="threatContactsMore" class="button-secondary threat-page-more" type="button" hidden>Load more contacts</button></div></div>
+          <div id="threatContacts" class="threat-contacts"><div class="threat-timeline-empty">เลือก Campaign เพื่อดู contact sequence</div></div>
+        </section>
+
+        <aside id="threatEdgeDrawer" class="threat-edge-drawer" aria-labelledby="threatEdgeDrawerTitle" hidden>
+          <div class="threat-edge-drawer-head"><div><span class="section-kicker">EDGE EVIDENCE</span><h2 id="threatEdgeDrawerTitle">Contact detail</h2></div><button id="threatEdgeClose" class="icon-button" type="button" aria-label="Close edge detail">×</button></div>
+          <div id="threatEdgeBody" class="threat-edge-body"></div>
+          <div class="threat-edge-actions"><button id="threatEdgeForensics" class="button-primary" type="button">Search packet sessions</button></div>
+        </aside>
+      </section>
+
+      <section class="page" data-page="forensics" aria-labelledby="forensicsTitle">
+        <div class="page-heading forensics-heading">
+          <div><p class="eyebrow">AUDITED EVIDENCE ACCESS</p><h1 id="forensicsTitle">Packet Forensics</h1><p>ค้นหา bounded session metadata ก่อนขอ payload grant ตาม purpose และสิทธิ์ของ Operator</p></div>
+          <div class="forensics-heading-actions"><span id="captureHealth" class="count-pill">Capture health —</span><button id="forensicsRefresh" class="button-secondary" type="button">Refresh</button></div>
+        </div>
+        <article class="card forensics-filter-card">
+          <div class="forensics-filter-grid">
+            <label>Campaign<input id="forensicsCampaign" maxlength="200" placeholder="Campaign ID"></label>
+            <label>Edge<input id="forensicsEdge" maxlength="200" placeholder="Edge ID (optional)"></label>
+            <label>From UTC<input id="forensicsFrom" type="datetime-local"></label>
+            <label>To UTC<input id="forensicsTo" type="datetime-local"></label>
+          </div>
+          <div class="forensics-purpose-row"><label>Purpose (required for payload access/export)<input id="forensicsPurpose" maxlength="500" placeholder="เช่น Investigate campaign recurrence INC-…"></label><button id="forensicsApply" class="button-primary" type="button">Search metadata</button></div>
+          <p id="forensicsCapability" class="form-note">Checking packet capabilities…</p>
+        </article>
+        <div class="forensics-layout">
+          <section class="card forensics-session-panel" aria-labelledby="forensicsSessionsTitle">
+            <div class="forensics-panel-title"><div><p class="eyebrow">BOUNDED RESULTS</p><h2 id="forensicsSessionsTitle">Packet sessions</h2></div><span id="forensicsSessionCount">0 sessions</span></div>
+            <div id="forensicsSessions" class="forensics-session-list"><div class="empty-state">เลือก Campaign หรือ Time window แล้วค้นหา metadata</div></div>
+          </section>
+          <aside class="card forensics-preview-panel" aria-labelledby="forensicsPreviewTitle">
+            <div class="forensics-panel-title"><div><p class="eyebrow">SAFE PREVIEW</p><h2 id="forensicsPreviewTitle">Session metadata</h2></div><span id="forensicsPayloadState">No selection</span></div>
+            <div id="forensicsPreview" class="forensics-preview"><div class="empty-state">เลือก session เพื่อดู flow/TLS metadata</div></div>
+            <div id="forensicsPayloadActions" class="forensics-payload-actions" hidden>
+              <button id="forensicsAccess" class="button-primary" type="button">Open audited payload</button>
+              <label>Export<select id="forensicsExportFormat"><option value="pcapng">PCAPNG</option><option value="pcap">PCAP</option></select></label>
+              <button id="forensicsExport" class="button-secondary" type="button">Create export job</button>
+            </div>
+          </aside>
+        </div>
       </section>
 
       <section class="page" data-page="assets" aria-labelledby="assetsTitle">
@@ -365,27 +454,112 @@
 
       <section class="page" data-page="reports" aria-labelledby="reportsTitle">
         <div class="page-heading report-page-heading">
-          <div><p class="eyebrow">CUSTOMER DELIVERABLES</p><h1 id="reportsTitle">Security Reports</h1><p>สรุปผลจาก Telemetry จริงของ Tenant ที่เลือก พร้อม Print/PDF และ CSV</p></div>
-          <span id="reportTenantBadge" class="count-pill">default</span>
+          <div><p class="eyebrow">REPORT STUDIO · CUSTOMER DELIVERABLES</p><h1 id="reportsTitle">Security Report Studio</h1><p>ออกแบบรายงานจากข้อมูล Tenant จริงด้วย Template, block และ layout ที่ควบคุมได้</p></div>
+          <div class="heading-actions"><span id="reportStudioSaveState" class="studio-save-state" role="status">Ready</span><span id="reportTenantBadge" class="count-pill">default</span></div>
         </div>
-        <div class="report-workbench">
-          <aside class="report-side-stack">
-            <form id="reportForm" class="card report-form">
-              <div class="card-title"><h2>Generate report</h2><span>Tenant scoped</span></div>
+
+        <section class="card studio-template-browser" aria-labelledby="reportTemplateHeading">
+          <div class="studio-section-heading"><div><p class="eyebrow">STARTING POINTS</p><h2 id="reportTemplateHeading">Template gallery</h2><p>เลือก Built-in layout หรือบันทึกเวอร์ชันของคุณเป็น Custom template</p></div><div><span id="reportTemplateState">Built-ins ready</span><button id="reportNewTemplate" class="button-secondary" type="button">+ Blank template</button></div></div>
+          <div id="reportStudioTemplates" class="studio-template-grid" role="group" aria-label="Report templates"></div>
+        </section>
+
+        <div class="report-studio-workbench">
+          <aside class="studio-left-rail">
+            <section class="card studio-palette-card" aria-labelledby="reportPaletteHeading">
+              <div class="studio-panel-heading"><div><p class="eyebrow">CONTENT</p><h2 id="reportPaletteHeading">Data blocks</h2></div><span id="reportDataSourceState">Loading</span></div>
+              <label class="studio-search"><span class="sr-only">Search data blocks</span><input id="reportPaletteSearch" type="search" placeholder="Search metrics, incidents…"></label>
+              <div id="reportStudioPalette" class="studio-palette" role="group" aria-label="Report data blocks"></div>
+              <p class="studio-help">คลิกหรือ drag block ลง Canvas ข้อมูลจะถูกผูกกับ Tenant ที่เลือก</p>
+            </section>
+
+            <form id="reportForm" class="card report-form studio-generate-form">
+              <div class="studio-panel-heading"><div><p class="eyebrow">DELIVER</p><h2>Generate report</h2></div><span>Tenant scoped</span></div>
               <label>Report title<input id="reportTitle" maxlength="200" placeholder="Monthly Security Report"></label>
               <div class="customer-form-grid"><label>From<input id="reportStart" type="date" required></label><label>To<input id="reportEnd" type="date" required></label></div>
-              <button id="generateReportButton" class="button-primary" type="submit">สร้าง Report</button>
+              <button id="generateReportButton" class="button-primary" type="submit">Generate from template</button>
             </form>
-            <article class="card report-history-card">
-              <div class="card-title"><h2>Report history</h2><span id="reportHistoryState">0 reports</span></div>
+
+            <section class="card report-history-card">
+              <div class="studio-panel-heading"><div><p class="eyebrow">VERSIONS</p><h2>Report history</h2></div><span id="reportHistoryState">0 reports</span></div>
               <div id="reportHistory" class="report-history"></div>
-            </article>
+            </section>
           </aside>
-          <article class="card report-preview-card">
-            <div class="report-preview-toolbar"><div><p class="eyebrow">REPORT PREVIEW</p><h2 id="reportPreviewTitle">ยังไม่มี Report</h2></div><div><button id="reportCsvButton" class="button-secondary" type="button" disabled>Download CSV</button><button id="reportPrintButton" class="button-primary" type="button" disabled>Print / Save PDF</button></div></div>
-            <div id="reportPreview" class="report-preview-empty"><span>▤</span><strong>สร้างหรือเลือก Report</strong><small>ข้อมูลทุกส่วนจะถูกกรองตาม Customer ที่เลือกอยู่ด้านบน</small></div>
-          </article>
+
+          <section class="card studio-canvas-card" aria-labelledby="reportCanvasHeading">
+            <div class="studio-toolbar">
+              <div class="studio-document-title"><span class="studio-brand-mark">NT/R</span><label><span>Template name</span><input id="reportTemplateName" maxlength="100" value="Executive Brief"></label></div>
+              <div class="studio-toolbar-actions" aria-label="Template actions">
+                <button id="reportUndo" type="button" title="Undo" aria-label="Undo" disabled>↶</button>
+                <button id="reportRedo" type="button" title="Redo" aria-label="Redo" disabled>↷</button>
+                <span class="studio-toolbar-separator" aria-hidden="true"></span>
+                <button id="reportDuplicateBlock" type="button" disabled>Duplicate block</button>
+                <button id="reportDeleteBlock" class="danger" type="button" disabled>Delete block</button>
+                <button id="reportDuplicateTemplate" type="button">Duplicate template</button>
+                <button id="reportDeleteTemplate" class="danger" type="button">Delete template</button>
+                <button id="reportExportTemplate" type="button">Export JSON</button>
+                <button id="reportSaveTemplate" class="button-primary" type="button">Save as custom</button>
+              </div>
+            </div>
+            <div class="studio-canvas-meta"><div><p class="eyebrow">DESIGN CANVAS</p><h2 id="reportCanvasHeading">Drag, arrange and resize</h2></div><div class="studio-canvas-hints"><span>Grid snap</span><span id="reportCanvasBlockCount">0 blocks</span></div></div>
+            <div id="reportStudioCanvas" class="studio-canvas-scroll" tabindex="0" aria-label="Report design canvas. Use arrow buttons in the inspector to reorder blocks.">
+              <div id="reportStudioPage" class="studio-page" data-theme="executive" data-font="system" data-size="a4" data-orientation="portrait" data-margin="normal" data-columns="2" data-density="comfortable">
+                <div class="studio-page-chrome"><span>NT SHIELD</span><small>SECURITY REPORT</small></div>
+                <div id="reportStudioBlocks" class="studio-block-grid" role="list" aria-label="Report blocks"></div>
+                <div id="reportStudioEmpty" class="studio-canvas-empty"><span>＋</span><strong>Build your report</strong><small>ลาก Data block จากด้านซ้ายมาวาง หรือเลือก Built-in template</small></div>
+                <footer class="studio-page-footer"><span>CONFIDENTIAL</span><span>NT Shield Report Studio</span></footer>
+              </div>
+            </div>
+            <div class="studio-canvas-footer"><span id="reportStudioStatus" role="status">Template ready</span><span>Layout snaps to a responsive document grid</span></div>
+          </section>
+
+          <aside class="studio-right-rail">
+            <section class="card studio-theme-card">
+              <div class="studio-panel-heading"><div><p class="eyebrow">BRAND</p><h2>Document style</h2></div><span>Safe presets</span></div>
+              <div class="studio-property-grid">
+                <label>Theme<select id="reportThemePreset"><option value="executive">Executive Gold</option><option value="technical">Technical Grid</option><option value="midnight">Midnight SOC</option><option value="signal">Signal Blue</option><option value="minimal">Minimal Ink</option><option value="classic">Classic Brief</option><option value="custom">Custom palette</option></select></label>
+                <label>Typography<select id="reportFontFamily"><option value="system">NT System</option><option value="arial">Arial</option><option value="georgia">Georgia</option><option value="mono">Mono</option></select></label>
+                <label>Page<select id="reportPageSize"><option value="a4">A4</option><option value="letter">Letter</option></select></label>
+                <label>Orientation<select id="reportOrientation"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></label>
+                <label>Margin<select id="reportMargin"><option value="compact">Compact</option><option value="normal">Normal</option><option value="spacious">Spacious</option></select></label>
+                <label>Columns<select id="reportColumns"><option value="1">1 column</option><option value="2">2 columns</option></select></label>
+                <label>Density<select id="reportDensity"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
+              </div>
+              <div class="studio-color-grid">
+                <label>Primary<input id="reportPrimaryColor" type="color" value="#18202b"></label>
+                <label>Accent<input id="reportAccentColor" type="color" value="#efb900"></label>
+                <label>Paper<input id="reportBackgroundColor" type="color" value="#ffffff"></label>
+                <label>Text<input id="reportTextColor" type="color" value="#252c38"></label>
+              </div>
+              <div class="studio-toggle-grid"><label class="studio-check"><input id="reportShowHeader" type="checkbox" checked> Header</label><label class="studio-check"><input id="reportShowFooter" type="checkbox" checked> Footer</label></div>
+              <p id="reportContrastState" class="studio-help" role="status">รับเฉพาะสี #RRGGBB และไม่รับ CSS</p>
+            </section>
+
+            <section class="card studio-inspector-card" aria-labelledby="reportInspectorHeading">
+              <div class="studio-panel-heading"><div><p class="eyebrow">INSPECT</p><h2 id="reportInspectorHeading">Selected block</h2></div><span id="reportSelectionState">None</span></div>
+              <div id="reportBlockEmpty" class="studio-inspector-empty">เลือก block บน Canvas หรือ Layer เพื่อแก้ Content และ Layout</div>
+              <form id="reportBlockForm" class="studio-block-form" hidden>
+                <label>Title<input id="reportBlockTitle" maxlength="120"></label>
+                <label>Data source<select id="reportBlockDataSource"></select></label>
+                <div class="studio-property-grid"><label>Width<select id="reportBlockWidth"><option value="full">Full</option><option value="half">Half</option><option value="third">Third</option></select></label><label>Style<select id="reportBlockStyle"><option value="default">Default</option><option value="card">Card</option><option value="plain">Plain</option><option value="accent">Accent</option></select></label></div>
+                <div class="studio-property-grid"><label>Items<input id="reportBlockLimit" type="number" min="1" max="20" value="5"></label><label>Visible<select id="reportBlockVisible"><option value="true">Visible</option><option value="false">Hidden</option></select></label></div>
+                <label id="reportBlockTextField">Text<textarea id="reportBlockText" rows="4" maxlength="2000"></textarea></label>
+                <fieldset id="reportMetricKeyField" class="studio-metric-field" hidden><legend>Metrics</legend><div id="reportMetricKeys" class="studio-metric-keys"></div></fieldset>
+                <label class="studio-check"><input id="reportBlockPageBreak" type="checkbox"> Start on a new printed page</label>
+                <div class="studio-inspector-actions"><button id="reportMoveBlockUp" type="button">↑ Move</button><button id="reportMoveBlockDown" type="button">↓ Move</button><button class="button-primary" type="submit">Apply</button></div>
+              </form>
+            </section>
+
+            <section class="card studio-layers-card" aria-labelledby="reportLayersHeading">
+              <div class="studio-panel-heading"><div><p class="eyebrow">STRUCTURE</p><h2 id="reportLayersHeading">Layers</h2></div><span id="reportLayerCount">0</span></div>
+              <div id="reportStudioLayers" class="studio-layers" role="listbox" aria-label="Report layers"></div>
+            </section>
+          </aside>
         </div>
+
+        <article id="reportDeliveryPanel" class="card report-preview-card studio-delivery-card">
+          <div class="report-preview-toolbar"><div><p class="eyebrow">GENERATED REPORT · TEMPLATE SNAPSHOT</p><h2 id="reportPreviewTitle">ยังไม่มี Report</h2></div><div><button id="reportCsvButton" class="button-secondary" type="button" disabled>Download CSV</button><button id="reportPrintButton" class="button-primary" type="button" disabled>Print / Save PDF</button></div></div>
+          <div id="reportPreview" class="report-preview-empty"><span>▤</span><strong>Generate or select a report</strong><small>Preview จะใช้ Template snapshot ที่บันทึกไปพร้อมรายงาน</small></div>
+        </article>
       </section>
 
       <section class="page" data-page="analyst" aria-labelledby="analystTitle">
@@ -489,7 +663,7 @@
 
       <section class="page" data-page="settings" aria-labelledby="settingsTitle">
         <div class="page-heading"><div><p class="eyebrow">CONFIGURE</p><h1 id="settingsTitle">Settings</h1><p>การเชื่อมต่อของ Control Center</p></div></div>
-        <article class="card settings-card"><h2>Central connection</h2><label>Central URL<input id="settingsOrigin" disabled></label><label>Operator API Key<input id="settingsApiKey" type="password" placeholder="ใส่ Key ใหม่"></label><label class="checkbox-row"><input id="settingsRemember" type="checkbox"> จดจำ Key ในเบราว์เซอร์นี้</label><div><button id="saveSettings" class="button-primary">บันทึกและเชื่อมต่อใหม่</button></div><p>Key ถูกส่งไปยัง Central ผ่าน HTTPS header และเก็บเฉพาะใน session storage เว้นแต่เลือก “จดจำ”</p></article>
+        <article class="card settings-card"><h2>Central connection</h2><label>Central URL<input id="settingsOrigin" disabled></label><label>Operator API Key<input id="settingsApiKey" type="password" placeholder="ใส่ Key ใหม่"></label><label class="checkbox-row"><input id="settingsRemember" type="checkbox"> จดจำชื่อผู้ใช้บนอุปกรณ์นี้</label><div><button id="saveSettings" class="button-primary">แลก Key และเชื่อมต่อใหม่</button></div><p>Central แลก Key ผ่าน HTTPS เป็น HttpOnly session cookie จากนั้น Control Center จะหยุดเก็บและส่ง API key</p></article>
       </section>
     </main>
 
@@ -512,11 +686,6 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="topology.js" defer></script>
-  <script src="tenant-report.js?v=20260807-tenant-report" defer></script>
-  <script src="vendor/d3.v7.min.js?v=7.9.0" defer></script>
-  <script src="vendor/topojson-client.min.js?v=3.1.0" defer></script>
-  <script src="defense-map.js?v=20260807-threat-events" defer></script>
-  <script src="app.js?v=20260807-ai-investigator-1" defer></script>
+  <script src="app.js?v=20260808-phase1-2" defer></script>
 </body>
 </html>

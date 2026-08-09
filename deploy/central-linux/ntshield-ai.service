@@ -13,12 +13,18 @@ Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
 Environment=PYTHONUNBUFFERED=1
+Environment=NTSHIELD_ENVIRONMENT=production
+Environment=NTSHIELD_ALLOW_DEV_TENANT=false
+Environment=NTSHIELD_LLM_ENABLED=false
+Environment=NTSHIELD_DATA_DIR=/var/lib/ntshield/ai
+Environment=NTSHIELD_DATABASE_PATH=/var/lib/ntshield/ai/ntshield-brain.db
 EnvironmentFile=-/etc/ntshield/ai.env
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/ntshield/ai
+StateDirectory=ntshield/ai
+StateDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target

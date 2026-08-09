@@ -3,6 +3,7 @@ namespace NTShield.Shared.Models;
 public sealed class SecurityEventRecord
 {
     public long Id { get; set; }
+    public string TenantId { get; set; } = "default";
     public DateTimeOffset TimestampUtc { get; set; }
     public string ComputerName { get; set; } = string.Empty;
     public string AgentId { get; set; } = string.Empty;

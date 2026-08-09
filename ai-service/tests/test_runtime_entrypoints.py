@@ -40,3 +40,28 @@ def test_dotenv_loader_allows_missing_file_and_parses_values(monkeypatch, tmp_pa
     run_brain.load_dotenv(dotenv)
 
     assert os.environ["NTSHIELD_TEST_VALUE"] == "safe value"
+
+
+def test_dotenv_loader_does_not_override_process_environment(monkeypatch, tmp_path: Path) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.write_text('NTSHIELD_TEST_VALUE="dotenv value"\n', encoding="utf-8")
+    monkeypatch.setenv("NTSHIELD_TEST_VALUE", "systemd value")
+
+    run_brain.load_dotenv(dotenv)
+
+    assert os.environ["NTSHIELD_TEST_VALUE"] == "systemd value"
+
+
+def test_systemd_unit_defaults_are_production_and_fail_closed() -> None:
+    unit = (
+        Path(__file__).resolve().parents[2]
+        / "deploy"
+        / "central-linux"
+        / "ntshield-ai.service"
+    ).read_text(encoding="utf-8")
+
+    assert "Environment=NTSHIELD_ENVIRONMENT=production" in unit
+    assert "Environment=NTSHIELD_ALLOW_DEV_TENANT=false" in unit
+    assert "Environment=NTSHIELD_LLM_ENABLED=false" in unit
+    assert "StateDirectory=ntshield/ai" in unit
+    assert "Environment=NTSHIELD_DATABASE_PATH=/var/lib/ntshield/ai/ntshield-brain.db" in unit

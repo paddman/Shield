@@ -156,6 +156,13 @@ public sealed class AgentIngestBatch
     public string ComputerName { get; set; } = string.Empty;
     public string AgentVersion { get; set; } = string.Empty;
     public DateTimeOffset SentAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    /// <summary>
+    /// Last Central-measured `(agentUtc - serverUtc)` offset. This is distinct
+    /// from queue/network delay and may be used to correct event display time.
+    /// </summary>
+    public double? ClockSkewSeconds { get; set; }
+    /// <summary>Central server time at which ClockSkewSeconds was measured.</summary>
+    public DateTimeOffset? ClockSkewMeasuredAtUtc { get; set; }
     public string? IdempotencyKey { get; set; }
     public List<SecurityEventRecord> SecurityEvents { get; set; } = [];
     public List<NetworkConnectionRecord> NetworkConnections { get; set; } = [];

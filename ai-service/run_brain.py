@@ -22,7 +22,10 @@ def load_dotenv(path: Path) -> None:
                 value = ast.literal_eval(value)
             except (SyntaxError, ValueError):
                 pass
-        os.environ[key.strip()] = value
+        # Values supplied by systemd/containers are the deployment authority.
+        # The local dotenv file only fills settings that the process does not
+        # already have.
+        os.environ.setdefault(key.strip(), value)
 
 
 def main() -> None:

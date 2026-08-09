@@ -11,10 +11,12 @@
     pinHost: null,
     geoCaption: null,
     requestJson: null,
+    getTenant: null,
     width: 0,
     height: 0,
     dpr: 1,
     active: false,
+    onscreen: true,
     initialized: false,
     frame: 0,
     lastTime: 0,
@@ -25,6 +27,8 @@
     graticule: null,
     geoAttacks: [],
     geoRequestId: 0,
+    geoController: null,
+    lastLookupKey: "",
     centeredOnFirstAttack: false
   };
 
@@ -36,6 +40,7 @@
     mapState.pinHost = document.querySelector("#defenseIncidentPins");
     mapState.geoCaption = document.querySelector(".defense-map-heading small");
     mapState.requestJson = options.requestJson || null;
+    mapState.getTenant = options.getTenant || null;
     mapState.reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     mapState.initialized = true;
 
@@ -44,6 +49,14 @@
       draw(performance.now());
     });
     observer.observe(mapState.canvas.parentElement);
+    if ("IntersectionObserver" in globalThis) {
+      const visibilityObserver = new IntersectionObserver(entries => {
+        mapState.onscreen = Boolean(entries[0]?.isIntersecting);
+        if (mapState.active && mapState.onscreen && !document.hidden) start();
+        else stop();
+      }, { rootMargin: "120px", threshold: .01 });
+      visibilityObserver.observe(mapState.canvas.parentElement);
+    }
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stop();
       else if (mapState.active) start();
@@ -59,8 +72,10 @@
       setGeoCaption("World geometry library unavailable");
       return;
     }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
     try {
-      const response = await fetch(WORLD_DATA_URL, { cache: "force-cache" });
+      const response = await fetch(WORLD_DATA_URL, { cache: "force-cache", signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const world = await response.json();
       mapState.countries = globalThis.topojson.feature(world, world.objects.countries);
@@ -69,18 +84,26 @@
     } catch (error) {
       console.warn("NT Shield world geometry unavailable", error);
       setGeoCaption("World map unavailable • telemetry remains active");
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  function update({ events = [], onlineAgents = 0 } = {}) {
+  function update({ incidents = [], onlineAgents = 0 } = {}) {
     mapState.defenseCount = Math.min(MAX_DEFENSE_AGENTS, Math.max(1, Number(onlineAgents) || 0));
-    resolveGeoAttacks(events);
+    if (mapState.active) resolveGeoAttacks(incidents);
     draw(performance.now());
   }
 
-  async function resolveGeoAttacks(events) {
+  async function resolveGeoAttacks(incidents) {
+    const candidates = collectAttackSources(incidents).slice(0, MAX_GEO_ATTACKS);
+    const lookupKey = `${String(mapState.getTenant?.() || "default")}|${candidates.map(item => item.ip.toLowerCase()).sort().join(",")}`;
+    if (lookupKey === mapState.lastLookupKey) return;
+    mapState.lastLookupKey = lookupKey;
     const requestId = ++mapState.geoRequestId;
-    const candidates = collectAttackSources(events).slice(0, MAX_GEO_ATTACKS);
+    mapState.geoController?.abort();
+    const controller = new AbortController();
+    mapState.geoController = controller;
     mapState.geoAttacks = [];
     syncGeoPins();
 
@@ -98,7 +121,9 @@
       const locations = await mapState.requestJson("/api/v1/geoip/lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: { ips: candidates.map(item => item.ip) }
+        body: { ips: candidates.map(item => item.ip) },
+        signal: controller.signal,
+        timeoutMs: 8000
       });
       if (requestId !== mapState.geoRequestId) return;
 
@@ -137,8 +162,12 @@
       draw(performance.now());
     } catch (error) {
       if (requestId !== mapState.geoRequestId) return;
+      mapState.lastLookupKey = "";
+      if (error?.name === "AbortError") return;
       console.warn("NT Shield GeoIP lookup failed", error);
       setGeoCaption("GeoIP lookup unavailable • no synthetic location shown");
+    } finally {
+      if (mapState.geoController === controller) mapState.geoController = null;
     }
   }
 
@@ -153,7 +182,7 @@
       const computerName = pick(item, "computerName");
       sources.push({
         ip,
-        title: String(pick(item, "title") || [eventId ? `Event ${eventId}` : "Threat event", computerName].filter(Boolean).join(" • ")),
+        title: String(pick(item, "title") || [eventId ? `Detection ${eventId}` : "Confirmed incident", computerName].filter(Boolean).join(" • ")),
         severity: severityClass(pick(item, "severity")),
         eventId: String(eventId || ""),
         eventRecordId: String(pick(item, "eventRecordId") || "")
@@ -205,29 +234,25 @@
   function syncGeoPins() {
     if (!mapState.pinHost) return;
     mapState.pinHost.replaceChildren();
-    mapState.geoAttacks.forEach((attack, index) => {
-      const pin = document.createElement("span");
-      pin.className = `defense-incident-pin ${attack.severity}`;
-      pin.dataset.geoIndex = String(index);
-      pin.hidden = true;
-      pin.title = [attack.title, attack.city, attack.region, attack.country].filter(Boolean).join(" • ");
-      const marker = document.createElement("i");
-      const label = document.createElement("span");
-      label.textContent = `${attack.ip} • ${attack.country}`;
-      pin.append(marker, label);
-      mapState.pinHost.append(pin);
-    });
+    const summary = mapState.geoAttacks.slice(0, 5).map(attack => `${attack.ip}, ${attack.country}`).join("; ");
+    mapState.canvas?.setAttribute("aria-label", summary ? `Live incident map: ${summary}` : "Live incident map");
   }
 
   function setActive(active) {
     mapState.active = Boolean(active);
     if (!mapState.initialized) init();
     if (mapState.active) start();
-    else stop();
+    else {
+      stop();
+      mapState.geoRequestId++;
+      mapState.geoController?.abort();
+      mapState.geoController = null;
+      mapState.lastLookupKey = "";
+    }
   }
 
   function start() {
-    if (!mapState.initialized || mapState.frame || mapState.reduceMotion || document.hidden) return;
+    if (!mapState.initialized || mapState.frame || mapState.reduceMotion || document.hidden || !mapState.onscreen) return;
     mapState.lastTime = performance.now();
     mapState.frame = requestAnimationFrame(animate);
   }
@@ -239,11 +264,15 @@
 
   function animate(time) {
     mapState.frame = 0;
+    if (time - mapState.lastTime < 50) {
+      if (mapState.active && mapState.onscreen && !document.hidden) mapState.frame = requestAnimationFrame(animate);
+      return;
+    }
     const delta = Math.min(40, time - mapState.lastTime);
     mapState.lastTime = time;
     mapState.rotation = normalizeLongitude(mapState.rotation + delta * .0018);
     draw(time);
-    if (mapState.active && !mapState.reduceMotion && !document.hidden) {
+    if (mapState.active && mapState.onscreen && !mapState.reduceMotion && !document.hidden) {
       mapState.frame = requestAnimationFrame(animate);
     }
   }
@@ -282,7 +311,7 @@
     const agentTargets = getAgentTargets().slice(0, mapState.defenseCount);
     const attackRoutes = buildAttackRoutes(projection, radius, time, agentTargets);
     drawGeoAttacks(ctx, attackRoutes, time);
-    positionGeoPins(attackRoutes);
+    drawGeoLabels(ctx, attackRoutes);
   }
 
   function createProjection(center, radius) {
@@ -435,18 +464,27 @@
     });
   }
 
-  function positionGeoPins(routes) {
-    if (!mapState.pinHost) return;
-    const pins = [...mapState.pinHost.querySelectorAll("[data-geo-index]")];
-    pins.forEach(pin => { pin.hidden = true; });
-    routes.forEach(({ index, start, control, target, motion }) => {
-      const pin = pins[index];
-      if (!pin) return;
+  function drawGeoLabels(ctx, routes) {
+    ctx.save();
+    ctx.font = "800 9px ui-monospace, SFMono-Regular, Consolas, monospace";
+    routes.slice(0, 3).forEach(({ attack, start, control, target, motion }) => {
       const packet = quadratic(start, control, target, motion.progress);
-      pin.hidden = false;
-      pin.style.opacity = String(motion.opacity);
-      pin.style.transform = `translate3d(${packet.x}px, ${packet.y}px, 0) translate(-50%, calc(-100% - 11px))`;
+      const label = `${attack.ip} • ${attack.country}`.slice(0, 46);
+      const width = Math.min(210, Math.ceil(ctx.measureText(label).width) + 16);
+      const x = Math.max(4, Math.min(mapState.width - width - 4, packet.x - width / 2));
+      const y = Math.max(17, packet.y - 18);
+      ctx.globalAlpha = motion.opacity;
+      ctx.fillStyle = "rgba(255,255,255,.94)";
+      ctx.strokeStyle = attack.severity === "critical" || attack.severity === "high" ? "rgba(255,90,61,.58)" : "rgba(224,168,15,.58)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(x, y - 13, width, 19);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#6b4b00";
+      ctx.fillText(label, x + 8, y);
     });
+    ctx.restore();
   }
 
   function isGeoVisible(attack) {

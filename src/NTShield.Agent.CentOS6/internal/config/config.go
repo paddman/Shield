@@ -73,7 +73,7 @@ func Default() Config {
 		Collection: CollectionConfig{
 			LogPollSeconds:           3,
 			ConnectionPollSeconds:    30,
-			FlushIntervalSeconds:     15,
+			FlushIntervalSeconds:     10,
 			HeartbeatIntervalSeconds: 60,
 			MaxBatchEvents:           500,
 			MaxBatchConnections:      1500,
@@ -146,7 +146,7 @@ func (c *Config) Validate() error {
 		c.Collection.ConnectionPollSeconds = 30
 	}
 	if c.Collection.FlushIntervalSeconds < 2 {
-		c.Collection.FlushIntervalSeconds = 15
+		c.Collection.FlushIntervalSeconds = 10
 	}
 	if c.Collection.HeartbeatIntervalSeconds < 15 {
 		c.Collection.HeartbeatIntervalSeconds = 60

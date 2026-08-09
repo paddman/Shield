@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using NTShield.Server.Data;
@@ -42,6 +43,7 @@ public sealed record LlmTokenCreateRequest(string? Name, int? ExpiresInDays);
 /// </summary>
 public sealed class LlmGatewayService
 {
+    private const long MaxBufferedRequestBodyBytes = 20L * 1024 * 1024;
     private static readonly HashSet<string> AllowedPaths = new(StringComparer.OrdinalIgnoreCase)
     {
         "models",
@@ -360,14 +362,59 @@ public sealed class LlmGatewayService
 
             if (HttpMethods.IsPost(http.Request.Method))
             {
-                upstreamRequest.Content = new StreamContent(http.Request.Body);
+                // Request decompression runs before this proxy. Buffer the
+                // resulting stream with a hard ceiling so the upstream receives
+                // the decompressed byte count rather than the original encoded
+                // Content-Length. SOC-Qwen rejects chunked request bodies.
+                byte[]? requestBody;
+                try
+                {
+                    requestBody = await ReadBoundedRequestBodyAsync(http, http.RequestAborted);
+                }
+                catch (InvalidDataException ex)
+                {
+                    _logger.LogWarning("LLM proxy rejected malformed compressed request body: {Error}", ex.Message);
+                    await WriteErrorAsync(
+                        http,
+                        StatusCodes.Status400BadRequest,
+                        "invalid_compressed_request_body");
+                    return;
+                }
+                catch (BadHttpRequestException ex) when (
+                    ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+                {
+                    _logger.LogWarning("LLM proxy rejected decompressed request over the server limit: {Error}", ex.Message);
+                    await WriteErrorAsync(
+                        http,
+                        StatusCodes.Status413PayloadTooLarge,
+                        "llm_request_too_large");
+                    return;
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Brotli/deflate decoder failures can surface as
+                    // InvalidOperationException while the decompression stream is
+                    // read. Size overruns are handled above as HTTP 413.
+                    _logger.LogWarning("LLM proxy rejected malformed compressed request body: {Error}", ex.Message);
+                    await WriteErrorAsync(
+                        http,
+                        StatusCodes.Status400BadRequest,
+                        "invalid_compressed_request_body");
+                    return;
+                }
+                if (requestBody is null)
+                {
+                    await WriteErrorAsync(
+                        http,
+                        StatusCodes.Status413PayloadTooLarge,
+                        "llm_request_too_large");
+                    return;
+                }
+
+                upstreamRequest.Content = new ByteArrayContent(requestBody);
                 upstreamRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(
                     string.IsNullOrWhiteSpace(http.Request.ContentType) ? "application/json" : http.Request.ContentType);
-                // StreamContent cannot infer the length from ASP.NET's request
-                // stream, so HttpClient otherwise sends the upstream request
-                // chunked. SOC-Qwen requires a concrete request size.
-                if (http.Request.ContentLength is long contentLength)
-                    upstreamRequest.Content.Headers.ContentLength = contentLength;
+                upstreamRequest.Content.Headers.ContentLength = requestBody.LongLength;
             }
 
             using var upstreamResponse = await client.SendAsync(
@@ -401,6 +448,36 @@ public sealed class LlmGatewayService
             _logger.LogWarning("LLM upstream unavailable: {Error}", ex.Message);
             await WriteErrorAsync(http, StatusCodes.Status502BadGateway, "llm_upstream_unreachable");
         }
+    }
+
+    private static async Task<byte[]?> ReadBoundedRequestBodyAsync(
+        HttpContext http,
+        CancellationToken cancellationToken)
+    {
+        var serverLimit = http.Features.Get<IHttpMaxRequestBodySizeFeature>()?.MaxRequestBodySize;
+        var limit = serverLimit.HasValue
+            ? Math.Min(serverLimit.Value, MaxBufferedRequestBodyBytes)
+            : MaxBufferedRequestBodyBytes;
+        if (limit < 0)
+            limit = MaxBufferedRequestBodyBytes;
+
+        await using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        long total = 0;
+        while (true)
+        {
+            var read = await http.Request.Body.ReadAsync(chunk, cancellationToken);
+            if (read == 0)
+                break;
+
+            total += read;
+            if (total > limit)
+                return null;
+
+            await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken);
+        }
+
+        return buffer.ToArray();
     }
 
     private HttpClient CreateClient()

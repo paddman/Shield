@@ -9,6 +9,7 @@ namespace NTShield.Shared.Models;
 /// </summary>
 public sealed class ThreatCampaign
 {
+    public string TenantId { get; set; } = "default";
     public string CampaignId { get; set; } = Guid.NewGuid().ToString("N");
     public string Title { get; set; } = string.Empty;
     public Severity Severity { get; set; }

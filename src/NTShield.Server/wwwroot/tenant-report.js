@@ -13,7 +13,12 @@
     selectedCustomerId: "",
     selectedReport: null,
     initialized: false,
-    syncing: false
+    syncing: false,
+    tenantGeneration: 0,
+    syncGeneration: 0,
+    customerAgentsGeneration: 0,
+    reportsGeneration: 0,
+    generateGeneration: 0
   };
 
   const byId = id => document.getElementById(id);
@@ -38,6 +43,12 @@
     moduleState.setTenant = options.setTenant;
     moduleState.initialized = true;
 
+    globalThis.NTShieldReportStudio?.init({
+      requestJson: moduleState.requestJson,
+      toast: moduleState.toast,
+      getTenant: moduleState.getTenant
+    });
+
     byId("globalTenantSelect")?.addEventListener("change", event => activateTenant(event.target.value));
     byId("newCustomerButton")?.addEventListener("click", newCustomer);
     byId("customerSearch")?.addEventListener("input", renderCustomers);
@@ -52,30 +63,61 @@
   }
 
   async function sync() {
-    if (!moduleState.initialized || moduleState.syncing) return;
+    if (!moduleState.initialized) return false;
+    const generation = ++moduleState.syncGeneration;
+    const tenantId = moduleState.getTenant();
     moduleState.syncing = true;
     try {
-      moduleState.tenants = array(await moduleState.requestJson("/api/v1/tenants"));
+      const tenants = array(await moduleState.requestJson("/api/v1/tenants", { headers: { "X-NTShield-Tenant": tenantId } }));
+      if (generation !== moduleState.syncGeneration || tenantId !== moduleState.getTenant()) return false;
+      moduleState.tenants = tenants;
       renderTenantOptions();
       const activePage = document.querySelector(".page.active")?.dataset.page;
       if (activePage === "customers") await loadCustomerAgents();
-      if (activePage === "reports") await loadReports();
+      if (activePage === "reports") await Promise.all([loadReports(), globalThis.NTShieldReportStudio?.sync?.()]);
+      return generation === moduleState.syncGeneration && tenantId === moduleState.getTenant();
     } catch (error) {
+      if (generation !== moduleState.syncGeneration || tenantId !== moduleState.getTenant()) return false;
       console.warn("NT Shield tenant context unavailable", error);
+      return false;
     } finally {
-      moduleState.syncing = false;
+      if (generation === moduleState.syncGeneration) moduleState.syncing = false;
     }
+  }
+
+  function resetTenant() {
+    if (!moduleState.initialized) return;
+    moduleState.tenantGeneration += 1;
+    moduleState.syncGeneration += 1;
+    moduleState.customerAgentsGeneration += 1;
+    moduleState.reportsGeneration += 1;
+    moduleState.generateGeneration += 1;
+    moduleState.syncing = false;
+    moduleState.agents = [];
+    moduleState.assignments = [];
+    moduleState.reports = [];
+    moduleState.selectedReport = null;
+    globalThis.NTShieldReportStudio?.resetTenant?.();
+    const generateButton = byId("generateReportButton");
+    if (generateButton) {
+      generateButton.disabled = false;
+      generateButton.textContent = "Generate from template";
+    }
+    renderTenantOptions();
+    renderCustomers();
+    renderCustomerAgents();
+    renderReports();
   }
 
   async function onPage(page) {
     if (!moduleState.initialized) return;
-    if (!moduleState.tenants.length) await sync();
+    const contextSynced = !moduleState.tenants.length ? await sync() : false;
     if (page === "customers") {
       await loadCustomerAgents();
       renderCustomers();
     }
     if (page === "reports") {
-      await loadReports();
+      if (!contextSynced) await Promise.all([loadReports(), globalThis.NTShieldReportStudio?.onPage?.(page)]);
       renderReports();
     }
   }
@@ -99,21 +141,28 @@
 
   async function activateTenant(tenantId) {
     if (!tenantId || tenantId === moduleState.getTenant()) return;
-    await moduleState.setTenant(tenantId);
+    const switched = await moduleState.setTenant(tenantId);
+    if (switched === false || tenantId !== moduleState.getTenant()) return;
     renderTenantOptions();
     moduleState.selectedReport = null;
-    await loadReports();
+    await Promise.all([loadReports(), globalThis.NTShieldReportStudio?.sync?.()]);
   }
 
   async function loadCustomerAgents() {
+    const generation = ++moduleState.customerAgentsGeneration;
+    const tenantId = moduleState.getTenant();
     try {
-      const data = await moduleState.requestJson("/api/v1/tenants/agents");
+      const data = await moduleState.requestJson("/api/v1/tenants/agents", { headers: { "X-NTShield-Tenant": tenantId } });
+      if (generation !== moduleState.customerAgentsGeneration || tenantId !== moduleState.getTenant()) return false;
       moduleState.agents = array(read(data, "agents"));
       moduleState.assignments = array(read(data, "assignments"));
       renderCustomers();
       renderCustomerAgents();
+      return true;
     } catch (error) {
+      if (generation !== moduleState.customerAgentsGeneration || tenantId !== moduleState.getTenant()) return false;
       if (byId("customerListState")) byId("customerListState").textContent = "โหลด Agent ไม่สำเร็จ";
+      return false;
     }
   }
 
@@ -131,7 +180,7 @@
       if (tenantId === moduleState.selectedCustomerId) tr.classList.add("selected");
       const count = moduleState.assignments.filter(item => read(item, "tenantId") === tenantId).length;
       const updated = new Date(read(tenant, "updatedAtUtc"));
-      tr.innerHTML = `<td><span class="customer-name-cell"><strong>${escapeHtml(read(tenant, "name"))}</strong><small>${escapeHtml(read(tenant, "contactEmail") || read(tenant, "legalName") || "No contact")}</small></span></td><td><code class="tenant-code">${escapeHtml(tenantId)}</code></td><td>${escapeHtml(read(tenant, "plan"))}</td><td><span class="tenant-status ${escapeHtml(read(tenant, "status"))}">${escapeHtml(read(tenant, "status"))}</span></td><td>${count}</td><td>${Number.isNaN(updated.valueOf()) ? "—" : updated.toLocaleDateString("th-TH")}</td>`;
+      tr.innerHTML = `<td><button type="button" class="customer-name-cell customer-select-button" data-select-tenant-id="${escapeHtml(tenantId)}"><strong>${escapeHtml(read(tenant, "name"))}</strong><small>${escapeHtml(read(tenant, "contactEmail") || read(tenant, "legalName") || "No contact")}</small></button></td><td><code class="tenant-code">${escapeHtml(tenantId)}</code></td><td>${escapeHtml(read(tenant, "plan"))}</td><td><span class="tenant-status ${escapeHtml(read(tenant, "status"))}">${escapeHtml(read(tenant, "status"))}</span></td><td>${count}</td><td>${Number.isNaN(updated.valueOf()) ? "—" : updated.toLocaleDateString("th-TH")}</td>`;
       return tr;
     }));
     byId("customerPageCount").textContent = `${moduleState.tenants.length} customers`;
@@ -139,9 +188,9 @@
   }
 
   function selectCustomerFromTable(event) {
-    const row = event.target.closest("tr[data-tenant-id]");
-    if (!row) return;
-    selectCustomer(row.dataset.tenantId);
+    const target = event.target.closest("[data-select-tenant-id], tr[data-tenant-id]");
+    if (!target) return;
+    selectCustomer(target.dataset.selectTenantId || target.dataset.tenantId);
   }
 
   function selectCustomer(tenantId) {
@@ -254,15 +303,22 @@
   }
 
   async function loadReports() {
-    if (!moduleState.initialized) return;
+    if (!moduleState.initialized) return false;
+    const generation = ++moduleState.reportsGeneration;
+    const tenantId = moduleState.getTenant();
     try {
-      moduleState.reports = array(await moduleState.requestJson("/api/v1/reports?take=50"));
+      const reports = array(await moduleState.requestJson("/api/v1/reports?take=50", { headers: { "X-NTShield-Tenant": tenantId } }));
+      if (generation !== moduleState.reportsGeneration || tenantId !== moduleState.getTenant()) return false;
+      moduleState.reports = reports;
       if (moduleState.selectedReport && !moduleState.reports.some(item => read(item, "reportId") === read(moduleState.selectedReport, "reportId"))) {
         moduleState.selectedReport = null;
       }
       renderReports();
+      return true;
     } catch (error) {
+      if (generation !== moduleState.reportsGeneration || tenantId !== moduleState.getTenant()) return false;
       if (byId("reportHistoryState")) byId("reportHistoryState").textContent = "โหลดไม่สำเร็จ";
+      return false;
     }
   }
 
@@ -288,28 +344,60 @@
   async function generateReport(event) {
     event.preventDefault();
     const button = byId("generateReportButton");
+    const generation = moduleState.tenantGeneration;
+    const requestGeneration = ++moduleState.generateGeneration;
+    const tenantId = moduleState.getTenant();
+    const title = byId("reportTitle").value.trim() || null;
+    const start = byId("reportStart").value;
+    const end = byId("reportEnd").value;
     button.disabled = true;
     button.textContent = "กำลังสร้าง…";
     try {
-      const start = byId("reportStart").value;
-      const end = byId("reportEnd").value;
+      const studio = globalThis.NTShieldReportStudio;
+      const templateId = await studio?.ensureSaved?.();
+      if (generation !== moduleState.tenantGeneration || requestGeneration !== moduleState.generateGeneration || tenantId !== moduleState.getTenant()) return;
+      if (!templateId) {
+        moduleState.toast?.("บันทึก Template ให้สำเร็จก่อนสร้าง Report");
+        return;
+      }
+      const templateSnapshot = studio?.getTemplateSnapshot?.();
+      const templateVersion = Number(read(templateSnapshot, "version"));
+      if (!Number.isInteger(templateVersion) || templateVersion < 1) {
+        moduleState.toast?.("ไม่พบ Template version ที่ถูกต้อง กรุณา Reload templates แล้วลองอีกครั้ง");
+        return;
+      }
       const report = await moduleState.requestJson("/api/v1/reports", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-NTShield-Tenant": tenantId },
         body: {
-          title: byId("reportTitle").value.trim() || null,
+          title,
+          templateId,
+          templateVersion,
           periodStartUtc: new Date(`${start}T00:00:00Z`).toISOString(),
           periodEndUtc: new Date(`${end}T23:59:59Z`).toISOString()
         }
       });
+      if (generation !== moduleState.tenantGeneration || requestGeneration !== moduleState.generateGeneration || tenantId !== moduleState.getTenant()) return;
+      if (!read(report, "templateSnapshot") && templateSnapshot) {
+        report.templateId = templateId;
+        report.templateSnapshot = templateSnapshot;
+      }
       moduleState.selectedReport = report;
       moduleState.toast?.("สร้าง Report แล้ว");
       await loadReports();
     } catch (error) {
-      moduleState.toast?.(`สร้าง Report ไม่สำเร็จ: ${error.message}`);
+      if (generation !== moduleState.tenantGeneration || requestGeneration !== moduleState.generateGeneration || tenantId !== moduleState.getTenant()) return;
+      if (error?.status === 409) {
+        moduleState.toast?.("Template ถูกแก้จากอีกหน้าต่าง — โหลดเวอร์ชันล่าสุดแล้ว กรุณาตรวจและกด Generate อีกครั้ง");
+        await globalThis.NTShieldReportStudio?.sync?.();
+      } else {
+        moduleState.toast?.(`สร้าง Report ไม่สำเร็จ: ${error.message}`);
+      }
     } finally {
-      button.disabled = false;
-      button.textContent = "สร้าง Report";
+      if (generation === moduleState.tenantGeneration && requestGeneration === moduleState.generateGeneration && tenantId === moduleState.getTenant()) {
+        button.disabled = false;
+        button.textContent = "Generate from template";
+      }
     }
   }
 
@@ -329,23 +417,22 @@
     if (!report) {
       byId("reportPreviewTitle").textContent = "ยังไม่มี Report";
       host.className = "report-preview-empty";
-      host.innerHTML = "<span>▤</span><strong>สร้างหรือเลือก Report</strong><small>ข้อมูลทุกส่วนจะถูกกรองตาม Customer ที่เลือกอยู่ด้านบน</small>";
+      const icon = document.createElement("span");
+      icon.textContent = "▤";
+      const title = document.createElement("strong");
+      title.textContent = "สร้างหรือเลือก Report";
+      const detail = document.createElement("small");
+      detail.textContent = "ข้อมูลทุกส่วนจะถูกกรองตาม Customer ที่เลือกอยู่ด้านบน";
+      host.replaceChildren(icon, title, detail);
       return;
     }
     byId("reportPreviewTitle").textContent = read(report, "title");
-    host.className = "report-document";
-    const metrics = read(report, "metrics") || {};
-    const severities = read(report, "severityCounts") || {};
-    const incidents = array(read(report, "priorityIncidents"));
-    const recommendations = array(read(report, "recommendations"));
-    host.innerHTML = `<header class="report-document-head"><div><p class="eyebrow">NT SHIELD • TENANT SECURITY REPORT</p><h3>${escapeHtml(read(report, "title"))}</h3><p>${escapeHtml(read(report, "customerName"))} · ${formatDate(read(report, "periodStartUtc"))} – ${formatDate(read(report, "periodEndUtc"))}</p></div><div class="report-score"><b>${Number(read(metrics, "defenseScore") || 0)}%</b><small>DEFENSE SCORE</small></div></header><div class="report-metrics">${metric("Threat Events", read(metrics, "threatEvents"))}${metric("Incidents", read(metrics, "incidents"))}${metric("Campaigns", read(metrics, "threatCampaigns"))}${metric("Agents Online", `${read(metrics, "onlineAgents") || 0}/${read(metrics, "agents") || 0}`)}${metric("Assets", read(metrics, "assets"))}${metric("Open", read(metrics, "openIncidents"))}${metric("Critical", read(severities, "critical") || 0)}${metric("High", read(severities, "high") || 0)}</div><h4>Priority incidents</h4><div class="report-incident-list">${incidents.length ? incidents.map(item => `<div class="report-incident-item"><em>${escapeHtml(read(item, "severity"))}</em><strong>${escapeHtml(read(item, "title"))}</strong><small>${escapeHtml(read(item, "sourceIp") || "—")} → ${escapeHtml(read(item, "destinationIp") || "—")}</small></div>`).join("") : '<p class="empty-state">No incidents in this period</p>'}</div><h4>Recommendations</h4><ol class="report-recommendations">${recommendations.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ol><p class="report-coverage">${escapeHtml(read(report, "coverageNote"))}</p>`;
+    host.className = "report-document studio-report-preview";
+    if (!globalThis.NTShieldReportStudio?.renderReport?.(report, host)) {
+      host.className = "report-preview-empty";
+      host.replaceChildren(document.createTextNode("Report preview is unavailable."));
+    }
   }
-
-  const metric = (label, value) => `<span><b>${escapeHtml(value ?? 0)}</b><small>${escapeHtml(label)}</small></span>`;
-  const formatDate = value => {
-    const date = new Date(value);
-    return Number.isNaN(date.valueOf()) ? "—" : date.toLocaleDateString("th-TH");
-  };
 
   function downloadCsv() {
     const report = moduleState.selectedReport;
@@ -369,24 +456,14 @@
   function printReport() {
     const report = moduleState.selectedReport;
     if (!report) return;
-    const popup = window.open("", "_blank");
-    if (!popup) {
-      moduleState.toast?.("Browser บล็อกหน้าต่าง Print กรุณาอนุญาต pop-up");
-      return;
-    }
-    popup.opener = null;
-    popup.document.write(printableHtml(report));
-    popup.document.close();
+    globalThis.NTShieldReportStudio?.printReport?.(report);
   }
 
-  function printableHtml(report) {
-    const metrics = read(report, "metrics") || {};
-    const incidents = array(read(report, "priorityIncidents"));
-    const recommendations = array(read(report, "recommendations"));
-    return `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${escapeHtml(read(report, "title"))}</title><style>body{font:14px/1.55 Arial,sans-serif;color:#252c38;margin:36px}header{border-bottom:3px solid #efb900;padding-bottom:14px}h1{margin:0}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:20px 0}.metrics div{border:1px solid #d9dee6;border-radius:9px;padding:10px}.metrics b{display:block;font-size:22px;color:#aa7800}table{width:100%;border-collapse:collapse}th,td{padding:7px;border-bottom:1px solid #e1e5eb;text-align:left;font-size:11px}small,footer{color:#718090}button{margin-top:10px}@media print{button{display:none}body{margin:15mm}}</style></head><body><header><small>NT SHIELD • TENANT SECURITY REPORT</small><h1>${escapeHtml(read(report, "title"))}</h1><p>${escapeHtml(read(report, "customerName"))} · ${formatDate(read(report, "periodStartUtc"))} – ${formatDate(read(report, "periodEndUtc"))}</p><button onclick="window.print()">Print / Save PDF</button></header><section class="metrics"><div><small>Threat Events</small><b>${read(metrics, "threatEvents") || 0}</b></div><div><small>Incidents</small><b>${read(metrics, "incidents") || 0}</b></div><div><small>Campaigns</small><b>${read(metrics, "threatCampaigns") || 0}</b></div><div><small>Defense Score</small><b>${read(metrics, "defenseScore") || 0}%</b></div></section><h2>Priority incidents</h2><table><thead><tr><th>Severity</th><th>Incident</th><th>Source</th><th>Destination</th><th>Status</th></tr></thead><tbody>${incidents.map(item => `<tr><td>${escapeHtml(read(item, "severity"))}</td><td>${escapeHtml(read(item, "title"))}</td><td>${escapeHtml(read(item, "sourceIp"))}</td><td>${escapeHtml(read(item, "destinationIp"))}</td><td>${escapeHtml(read(item, "status"))}</td></tr>`).join("")}</tbody></table><h2>Recommendations</h2><ol>${recommendations.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ol><footer>Generated ${escapeHtml(read(report, "generatedAtUtc"))}<br>${escapeHtml(read(report, "coverageNote"))}</footer></body></html>`;
-  }
-
-  const csv = value => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const csv = value => {
+    let text = String(value ?? "");
+    if (/^(?:\s*[=+\-@]|[\t\r\n])/.test(text)) text = `'${text}`;
+    return `"${text.replaceAll('"', '""')}"`;
+  };
   function saveBlob(content, type, name) {
     const url = URL.createObjectURL(new Blob([content], { type }));
     const anchor = document.createElement("a");
@@ -396,5 +473,5 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  globalThis.NTShieldTenantReports = { init, sync, onPage };
+  globalThis.NTShieldTenantReports = { init, sync, onPage, resetTenant };
 })();

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Claims;
 using NTShield.Server.Data;
 using NTShield.Server.LLM;
 using Microsoft.Extensions.Options;
@@ -27,7 +28,8 @@ public sealed class ApiKeyAuthMiddleware
         HttpContext ctx,
         IOptions<SecurityOptions> securityOpt,
         ICentralStore store,
-        LlmGatewayService llmGateway)
+        LlmGatewayService llmGateway,
+        SecurityAuditQueue auditQueue)
     {
         var security = securityOpt.Value;
         var path = ctx.Request.Path.Value ?? "";
@@ -62,7 +64,59 @@ public sealed class ApiKeyAuthMiddleware
                 return;
             }
 
-            await FailAsync(ctx, store, "invalid_llm_token", path);
+            await FailAsync(ctx, auditQueue, "invalid_llm_token", path);
+            return;
+        }
+
+        // Agent ingest credentials stay machine-bound even when an operator has
+        // an interactive dashboard cookie in the same browser/process.
+        if (security.RequireAuth && IsAgentPath(path))
+        {
+            var agentKey = GetApiKey(ctx);
+            var agentId = string.IsNullOrWhiteSpace(agentKey)
+                ? null
+                : await store.FindAgentIdByApiKeyHashAsync(SecretBootstrapper.HashApiKey(agentKey));
+            if (!string.IsNullOrWhiteSpace(agentId))
+            {
+                ctx.Items[PrincipalItem] = "agent";
+                ctx.Items[AgentIdItem] = agentId;
+                await _next(ctx);
+                return;
+            }
+
+            await FailAsync(ctx, auditQueue,
+                string.IsNullOrWhiteSpace(agentKey) ? "missing_agent_api_key" : "invalid_agent_api_key",
+                path);
+            return;
+        }
+
+        var dashboardRoles = ctx.User.FindAll(ClaimTypes.Role)
+            .Select(claim => claim.Value)
+            .Where(DashboardRoles.IsKnown)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (ctx.User.Identity?.IsAuthenticated == true && dashboardRoles.Length > 0)
+        {
+            var canMutate = dashboardRoles.Contains(DashboardRoles.SocOperator, StringComparer.OrdinalIgnoreCase) ||
+                            dashboardRoles.Contains(DashboardRoles.SocAdmin, StringComparer.OrdinalIgnoreCase);
+            // Every authenticated dashboard role must be able to revoke its own
+            // cookie session. CSRF validation still applies to this POST; the
+            // exception only bypasses the SOC mutation-role gate.
+            if (!canMutate && IsUnsafeMethod(ctx.Request.Method) && !IsDashboardLogout(ctx))
+            {
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await ctx.Response.WriteAsJsonAsync(new { error = "operator_role_read_only" });
+                return;
+            }
+
+            var subject = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+                          ctx.User.FindFirstValue("sub") ??
+                          "operator";
+            ctx.Items[PrincipalItem] = $"user:{subject}";
+            ctx.Items["NTShieldRoles"] = dashboardRoles;
+            ctx.Items["NTShieldTenantClaims"] = ctx.User.FindAll(DashboardSessionEndpoints.TenantClaim)
+                .Select(claim => claim.Value).ToArray();
+            await _next(ctx);
             return;
         }
 
@@ -79,7 +133,7 @@ public sealed class ApiKeyAuthMiddleware
         var key = GetApiKey(ctx);
         if (string.IsNullOrWhiteSpace(key))
         {
-            await FailAsync(ctx, store, "missing_api_key", path);
+            await FailAsync(ctx, auditQueue, "missing_api_key", path);
             return;
         }
 
@@ -91,21 +145,8 @@ public sealed class ApiKeyAuthMiddleware
             return;
         }
 
-        // Agent paths only for agent keys
-        if (IsAgentPath(path))
-        {
-            var agentId = await store.FindAgentIdByApiKeyHashAsync(SecretBootstrapper.HashApiKey(key));
-            if (!string.IsNullOrEmpty(agentId))
-            {
-                ctx.Items[PrincipalItem] = "agent";
-                ctx.Items[AgentIdItem] = agentId;
-                await _next(ctx);
-                return;
-            }
-        }
-
         // Operator-only paths reject agent keys
-        await FailAsync(ctx, store, "invalid_api_key", path);
+        await FailAsync(ctx, auditQueue, "invalid_api_key", path);
     }
 
     private async Task TryAttachPrincipalAsync(HttpContext ctx, SecurityOptions security, ICentralStore store)
@@ -127,24 +168,17 @@ public sealed class ApiKeyAuthMiddleware
         }
     }
 
-    private async Task FailAsync(HttpContext ctx, ICentralStore store, string reason, string path)
+    private async Task FailAsync(HttpContext ctx, SecurityAuditQueue auditQueue, string reason, string path)
     {
         _logger.LogWarning("Auth failed path={Path} reason={Reason} ip={Ip}",
             path, reason, ctx.Connection.RemoteIpAddress);
-        try
-        {
-            await store.AppendAuditAsync(
-                actor: "anonymous",
-                action: "auth.fail",
-                target: path,
-                result: "fail",
-                detailJson: JsonSerializer.Serialize(new { reason }),
-                sourceIp: ctx.Connection.RemoteIpAddress?.ToString());
-        }
-        catch
-        {
-            // ignore audit failures
-        }
+        auditQueue.TryEnqueue(new SecurityAuditEvent(
+            Actor: "anonymous",
+            Action: "auth.fail",
+            Target: path,
+            Result: "fail",
+            DetailJson: JsonSerializer.Serialize(new { reason }),
+            SourceIp: ctx.Connection.RemoteIpAddress?.ToString()));
 
         ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
         ctx.Response.ContentType = "application/json";
@@ -179,7 +213,14 @@ public sealed class ApiKeyAuthMiddleware
 
     private static bool IsPublic(string path) =>
         path.Equals("/health", StringComparison.OrdinalIgnoreCase) ||
-        path.Equals("/api/v1/health", StringComparison.OrdinalIgnoreCase);
+        path.Equals("/api/v1/health", StringComparison.OrdinalIgnoreCase) ||
+        path.Equals("/api/v2/readiness", StringComparison.OrdinalIgnoreCase) ||
+        path.Equals("/api/v2/session", StringComparison.OrdinalIgnoreCase) ||
+        path.Equals("/api/v2/session/exchange", StringComparison.OrdinalIgnoreCase) ||
+        path.Equals("/api/v2/session/local", StringComparison.OrdinalIgnoreCase) ||
+        path.Equals("/api/v2/session/login", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/signin-oidc", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/signout-callback-oidc", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsAgentPath(string path) =>
         path.StartsWith("/api/v1/agents/heartbeat", StringComparison.OrdinalIgnoreCase) ||
@@ -190,6 +231,16 @@ public sealed class ApiKeyAuthMiddleware
 
     private static bool IsLlmProxyPath(string path) =>
         path.StartsWith("/api/v1/llm/v1/", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUnsafeMethod(string method) =>
+        HttpMethods.IsPost(method) ||
+        HttpMethods.IsPut(method) ||
+        HttpMethods.IsPatch(method) ||
+        HttpMethods.IsDelete(method);
+
+    private static bool IsDashboardLogout(HttpContext context) =>
+        HttpMethods.IsPost(context.Request.Method) &&
+        context.Request.Path.Equals("/api/v2/session/logout", StringComparison.OrdinalIgnoreCase);
 
     private static bool FixedTimeEquals(string a, string b)
     {

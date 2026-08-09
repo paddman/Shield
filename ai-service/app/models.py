@@ -32,6 +32,7 @@ class EvidenceSource(StrEnum):
     ASM = "asm"
     THREAT_INTEL = "threat_intel"
     DECEPTION = "deception"
+    TEMPORAL_CHAIN = "temporal_chain"
     RAW = "raw"
 
 
@@ -219,6 +220,9 @@ class IncidentInput(ApiModel):
     asm_findings: list[dict[str, Any]] = Field(default_factory=list)
     threat_intel: list[dict[str, Any]] = Field(default_factory=list)
     deception_hits: list[dict[str, Any]] = Field(default_factory=list)
+    # Preferred Central v2 contract: bounded facts with stable citation ids.
+    # This is distinct from raw_evidence, which remains a compatibility input.
+    structured_evidence: list[EvidenceItem] = Field(default_factory=list, max_length=250)
     raw_evidence: list[dict[str, Any]] = Field(default_factory=list)
 
     features: dict[str, float] = Field(default_factory=dict)

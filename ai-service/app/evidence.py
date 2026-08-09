@@ -239,6 +239,11 @@ class EvidenceNormalizer:
                 )
             )
 
+        for item in incident.structured_evidence:
+            # Copy before privacy masking so request models are not mutated and
+            # citations remain stable for every specialist/commander pass.
+            add(item.model_copy(deep=True))
+
         for idx, raw in enumerate(incident.raw_evidence):
             ref = str(raw.get("ref_id") or raw.get("refId") or _stable_ref("raw", raw, idx))
             add(

@@ -36,7 +36,8 @@
 .defense-copy .eyebrow { margin: 0 0 11px; color: #a87300; font-size: 12px; letter-spacing: .16em; }
 .defense-copy h1 { margin: 0; color: #303640; font-size: clamp(23px, 1.45vw, 28px); line-height: 1.16; letter-spacing: -.035em; }
 .defense-copy h1 strong { color: #d29a00; font-weight: 900; }
-.defense-copy > p:last-child { max-width: 280px; margin: 14px 0 0; color: #667180; font-size: 12px; line-height: 1.55; }
+.defense-copy #overviewPostureReason { max-width: 280px; margin: 14px 0 0; color: #667180; font-size: 12px; line-height: 1.55; }
+.defense-copy .overview-visibility-gaps { max-width: 360px; margin: 8px 0 0; padding: 7px 9px; border: 1px solid rgba(207, 143, 0, .3); border-radius: 8px; background: rgba(255, 246, 214, .76); color: #785a16; font: 700 9px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
 
 .defense-panel { position: relative; z-index: 4; min-width: 0; border: 1px solid rgba(176,186,199,.48); border-radius: 18px; background: rgba(255,255,255,.92); box-shadow: 0 14px 38px rgba(47,57,72,.075), inset 0 1px rgba(255,255,255,.98); backdrop-filter: blur(16px) saturate(1.08); }
 .defense-panel::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: linear-gradient(130deg, rgba(255,255,255,.58), transparent 42%); }
@@ -145,6 +146,74 @@
 .defense-impact-score b { color: #c99200; font-size: 22px; line-height: 1; }
 .defense-impact-score span { color: #66717f; font-size: 9px; line-height: 1.35; }
 
+/* Phase 1 overview modes and unified investigation queue */
+.overview-mode-switch { display: inline-flex; gap: 3px; margin-bottom: 12px; padding: 3px; border: 1px solid #e0e5eb; border-radius: 10px; background: rgba(255,255,255,.9); box-shadow: 0 5px 15px rgba(45,56,70,.06); }
+.overview-mode-switch button { min-width: 74px; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; color: #6a7482; font: inherit; font-size: 9px; font-weight: 850; cursor: pointer; }
+.overview-mode-switch button.active { background: #171c26; color: #ffd437; }
+.overview-mode-switch button:focus-visible { outline: 3px solid rgba(242,185,0,.3); outline-offset: 2px; }
+.defense-panel-link { padding: 6px 8px; border: 1px solid #e5d58f; border-radius: 7px; background: #fffaf0; color: #8b6500; font-size: 9px; font-weight: 850; cursor: pointer; }
+.defense-panel-link:hover, .defense-panel-link:focus-visible { border-color: #d7aa00; outline: none; background: #fff3c5; }
+.defense-threat-list { max-height: calc(100% - 48px); overflow-y: auto; }
+.defense-threat-row { width: 100%; padding: 0; border: 0; border-bottom: 1px solid rgba(226,230,235,.82); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.defense-threat-row:hover { background: #fffcf3; }
+.defense-threat-row:focus-visible { outline: 3px solid rgba(234,180,0,.33); outline-offset: -3px; }
+.defense-threat-risk { max-width: 68px; overflow: hidden; text-overflow: ellipsis; }
+
+.executive-overview-panel { display: none; grid-column: 2 / 4; grid-row: 2 / 4; padding: 24px; overflow: auto; }
+.global-defense-stage[data-overview-mode="executive"] .executive-overview-panel { display: block; }
+.global-defense-stage[data-overview-mode="executive"] .defense-globe-wrap,
+.global-defense-stage[data-overview-mode="executive"] .defense-network-panel,
+.global-defense-stage[data-overview-mode="executive"] .threat-map-panel,
+.global-defense-stage[data-overview-mode="executive"] .defense-status-panel,
+.global-defense-stage[data-overview-mode="executive"] .defense-impact-panel { display: none; }
+.global-defense-stage[data-overview-mode="executive"] .active-threat-panel { grid-row: 2 / 4; }
+.executive-posture { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 22px; border-bottom: 1px solid #e5e9ee; }
+.executive-posture .eyebrow { margin: 0; }
+.executive-posture h2 { margin: 6px 0 0; color: #273141; font-size: clamp(22px, 2vw, 31px); }
+.executive-posture p:last-child { max-width: 670px; margin: 8px 0 0; color: #697485; font-size: 12px; line-height: 1.6; }
+.executive-posture > strong { flex: 0 0 auto; padding: 10px 13px; border-radius: 9px; background: #eef1f4; color: #647080; font-size: 11px; }
+.executive-posture > strong[data-tone="protected"] { background: #e8f7ef; color: #18734c; }
+.executive-posture > strong[data-tone="elevated"] { background: #fff4d2; color: #8a6200; }
+.executive-posture > strong[data-tone="critical"] { background: #ffeaeb; color: #b42f32; }
+.executive-risk-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 10px; margin-top: 20px; }
+.executive-risk-grid article { min-width: 0; padding: 16px; border: 1px solid #e5e9ee; border-radius: 12px; background: #fbfcfd; }
+.executive-risk-grid small, .executive-risk-grid b, .executive-risk-grid span { display: block; }
+.executive-risk-grid small { color: #7c8795; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+.executive-risk-grid b { margin-top: 6px; color: #2c3543; font-size: 29px; font-variant-numeric: tabular-nums; }
+.executive-risk-grid span { margin-top: 4px; overflow: hidden; color: #7e8896; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.executive-risk-grid article:first-child b { color: #c83a38; }
+.executive-risk-grid article:nth-child(2) b { color: #bd6b13; }
+.executive-lifecycle-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin-top: 10px; }
+.executive-lifecycle-grid article { padding: 12px 14px; border: 1px dashed #dce2e8; border-radius: 10px; background: #fafbfc; }
+.executive-lifecycle-grid small, .executive-lifecycle-grid b, .executive-lifecycle-grid span { display: block; }
+.executive-lifecycle-grid small { color: #7d8795; font-size: 8px; font-weight: 850; letter-spacing: .09em; }
+.executive-lifecycle-grid b { margin-top: 5px; color: #3a4656; font-size: 17px; }
+.executive-lifecycle-grid span { margin-top: 3px; color: #8a94a0; font-size: 8px; }
+.executive-lifecycle-grid > p { grid-column: 1 / -1; margin: 0; padding: 9px 11px; border-left: 3px solid #d7aa00; background: #fffaf0; color: #785f22; font-size: 9px; line-height: 1.5; }
+.executive-lifecycle-grid > p[hidden] { display: none; }
+.executive-trend-card { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: start; gap: 4px 18px; margin-top: 20px; padding: 18px; border: 1px solid #e5e9ee; border-radius: 14px; background: linear-gradient(180deg,#fff,#fbfcfd); }
+.executive-trend-card .eyebrow { margin: 0; }
+.executive-trend-card h3 { margin: 4px 0 0; color: #303a49; font-size: 14px; }
+.executive-trend-card > span { color: #74808e; font-size: 9px; }
+#executiveTrendChart { grid-column: 1 / -1; width: 100%; height: 190px; margin-top: 8px; overflow: visible; }
+#executiveTrendGrid line { stroke: #e9edf1; stroke-width: 1; vector-effect: non-scaling-stroke; }
+#executiveIncidentTrend, #executiveCampaignTrend { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke; }
+#executiveIncidentTrend { stroke: #e05b45; }
+#executiveCampaignTrend { stroke: #d6a500; }
+.executive-trend-legend { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 14px; color: #687383; font-size: 9px; }
+.executive-trend-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.executive-trend-legend i { width: 14px; border-top: 2px solid; }
+.executive-trend-legend i.incident { border-color: #e05b45; }
+.executive-trend-legend i.campaign { border-color: #d6a500; }
+
+.defense-map-slot-0 { left: 8%; top: 22%; }.defense-map-slot-1 { left: 17%; top: 38%; }.defense-map-slot-2 { left: 26%; top: 56%; }.defense-map-slot-3 { left: 35%; top: 29%; }
+.defense-map-slot-4 { left: 44%; top: 64%; }.defense-map-slot-5 { left: 53%; top: 43%; }.defense-map-slot-6 { left: 62%; top: 24%; }.defense-map-slot-7 { left: 71%; top: 59%; }
+.defense-map-slot-8 { left: 80%; top: 34%; }.defense-map-slot-9 { left: 89%; top: 68%; }.defense-map-slot-10 { left: 13%; top: 73%; }.defense-map-slot-11 { left: 23%; top: 18%; }
+.defense-map-slot-12 { left: 32%; top: 77%; }.defense-map-slot-13 { left: 41%; top: 46%; }.defense-map-slot-14 { left: 50%; top: 21%; }.defense-map-slot-15 { left: 59%; top: 72%; }
+.defense-map-slot-16 { left: 68%; top: 41%; }.defense-map-slot-17 { left: 77%; top: 19%; }.defense-map-slot-18 { left: 86%; top: 52%; }.defense-map-slot-19 { left: 10%; top: 51%; }
+.defense-map-slot-20 { left: 29%; top: 39%; }.defense-map-slot-21 { left: 48%; top: 81%; }.defense-map-slot-22 { left: 67%; top: 80%; }.defense-map-slot-23 { left: 84%; top: 77%; }
+.defense-map-delay-0 { animation-delay: 0ms; }.defense-map-delay-1 { animation-delay: -500ms; }.defense-map-delay-2 { animation-delay: -1000ms; }.defense-map-delay-3 { animation-delay: -1500ms; }.defense-map-delay-4 { animation-delay: -2000ms; }
+
 @keyframes defense-float { 50% { transform: translate3d(8px,-13px,0); opacity: .42; } }
 @keyframes defense-orbit { to { transform: rotate(360deg); } }
 @keyframes defense-status-pulse { 50% { opacity: .45; box-shadow: 0 0 0 7px rgba(255,196,0,0); } }
@@ -156,7 +225,7 @@
 @media (max-width: 1240px) {
   .global-defense-stage { grid-template-columns: 210px minmax(450px,1fr) 220px; grid-template-rows: 205px minmax(380px,1fr) 160px; padding-inline: 18px; }
   .defense-copy h1 { font-size: 22px; }
-  .defense-copy > p:last-child { font-size: 11px; }
+  .defense-copy #overviewPostureReason { font-size: 11px; }
   .defense-agent span { display: none; }
   .telemetry-panel { width: 92%; }
   .defense-incident-pin { max-width: 170px; font-size: 9px; }
@@ -175,6 +244,10 @@
   .defense-status-panel { grid-column: 2; grid-row: 3; width: 100%; }
   .threat-map-panel { grid-column: 1; grid-row: 4; }
   .defense-impact-panel { grid-column: 2; grid-row: 4; }
+  .executive-overview-panel { grid-column: 2; grid-row: 2 / 5; }
+  .global-defense-stage[data-overview-mode="executive"] .active-threat-panel { grid-row: 2 / 5; }
+  .executive-risk-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .executive-lifecycle-grid { grid-template-columns: 1fr; }
   .defense-status-grid { grid-template-columns: repeat(2,1fr); }
   .defense-status-grid > span:last-child { display: none; }
 }
@@ -187,7 +260,7 @@
   .global-defense-stage { display: flex; flex-direction: column; gap: 10px; padding: 16px 11px 26px; min-height: auto; }
   .defense-copy { order: 1; padding: 0 3px 7px; }
   .defense-copy h1 { font-size: 24px; }
-  .defense-copy > p:last-child { max-width: 560px; }
+  .defense-copy #overviewPostureReason { max-width: 560px; }
   .telemetry-panel { order: 2; width: 100%; height: auto; }
   .telemetry-metrics { grid-template-columns: repeat(3,1fr); gap: 9px 0; }
   .telemetry-metrics > span:nth-child(4)::before { display: none; }
@@ -198,6 +271,10 @@
   .defense-status-grid { grid-template-columns: repeat(2,1fr); padding-block: 10px; }
   .threat-map-panel { order: 7; }
   .defense-impact-panel { order: 8; min-height: 165px; }
+  .executive-overview-panel { order: 3; width: 100%; padding: 18px; }
+  .global-defense-stage[data-overview-mode="executive"] .active-threat-panel { order: 4; }
+  .executive-posture { display: grid; }
+  .executive-posture > strong { width: fit-content; }
   .defense-agent span { display: block; }
   .agent-one { right: 4%; }.agent-two { right: 0; }.agent-three { right: 7%; }
 }
@@ -212,6 +289,11 @@
   .defense-geo-attribution { left: 12px; bottom: 9px; font-size: 7px; }
   .defense-agent span { display: none; }
   .defense-status-grid { grid-template-columns: 1fr; }
+  .overview-mode-switch { width: 100%; }
+  .overview-mode-switch button { flex: 1; }
+  .executive-risk-grid { grid-template-columns: 1fr 1fr; }
+  .executive-risk-grid article { padding: 12px; }
+  .executive-risk-grid b { font-size: 23px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

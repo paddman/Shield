@@ -43,7 +43,7 @@ public sealed class CentralServerOptions
     public bool AllowUntrustedServerCertificate { get; set; }
     public int TimeoutSeconds { get; set; } = 30;
     public int HeartbeatIntervalSeconds { get; set; } = 60;
-    public int FlushIntervalSeconds { get; set; } = 15;
+    public int FlushIntervalSeconds { get; set; } = 10;
     public int BatchSize { get; set; } = 200;
     public int OfflineQueueLimit { get; set; } = 100_000;
 
@@ -147,6 +147,11 @@ public sealed class NetworkCollectorOptions
     }
 
     public int PollIntervalSeconds { get; set; } = 5;
+    /// <summary>
+    /// Emit a bounded observation for a still-open connection at this interval.
+    /// This preserves long-lived contact duration without emitting every poll.
+    /// </summary>
+    public int ActiveConnectionObservationSeconds { get; set; } = 15;
     public bool CaptureUdp { get; set; } = true;
     public bool ResolveProcessDetails { get; set; } = true;
     public bool HashNewExecutables { get; set; } = true;

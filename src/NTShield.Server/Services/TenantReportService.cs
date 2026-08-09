@@ -13,11 +13,16 @@ public sealed class TenantReportService
     private const int ReportRowLimit = 10_000;
     private readonly ICentralStore _store;
     private readonly LateralMovementTracker _tracker;
+    private readonly ReportTemplateService _templates;
 
-    public TenantReportService(ICentralStore store, LateralMovementTracker tracker)
+    public TenantReportService(
+        ICentralStore store,
+        LateralMovementTracker tracker,
+        ReportTemplateService? templates = null)
     {
         _store = store;
         _tracker = tracker;
+        _templates = templates ?? new ReportTemplateService(store);
     }
 
     public Task<IReadOnlyList<SecurityReportRecord>> ListAsync(string tenantId, int take) =>
@@ -39,6 +44,13 @@ public sealed class TenantReportService
         if (start >= end) throw new TopologyValidationException("Report start must be before report end.");
         if (end - start > TimeSpan.FromDays(366))
             throw new TopologyValidationException("A report period cannot exceed 366 days.");
+        var template = await _templates.ResolveForReportAsync(tenantId, request.TemplateId);
+        if (!template.IsBuiltIn && request.TemplateVersion is null)
+            throw new TopologyValidationException("Custom report template version is required.");
+        if (request.TemplateVersion is < 1)
+            throw new TopologyValidationException("Report template version must be at least 1.");
+        if (request.TemplateVersion is int expectedVersion && template.Version != expectedVersion)
+            throw new ReportTemplateVersionConflictException(template.Version);
 
         var eventsTask = _store.ListSecurityEventsAsync(ReportRowLimit, tenantId, start, end);
         var incidentsTask = _store.ListIncidentsAsync(ReportRowLimit, tenantId, start, end);
@@ -52,17 +64,8 @@ public sealed class TenantReportService
         var aggregate = await aggregateTask;
         var agents = await agentsTask;
         var assets = await assetsTask;
-        var agentIds = agents.OfType<AgentInventoryItem>()
-            .Select(item => item.AgentId)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var incidentIds = incidents.Select(item => item.IncidentId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var campaigns = _tracker.ListCampaigns(500)
+        var campaigns = _tracker.ListCampaigns(500, tenantId)
             .Where(campaign => campaign.LastSeenUtc >= start && campaign.LastSeenUtc <= end)
-            .Where(campaign =>
-                campaign.RelatedIncidentIds.Any(incidentIds.Contains) ||
-                campaign.Hops.Any(hop =>
-                    (!string.IsNullOrWhiteSpace(hop.FromAgentId) && agentIds.Contains(hop.FromAgentId)) ||
-                    (!string.IsNullOrWhiteSpace(hop.ToAgentId) && agentIds.Contains(hop.ToAgentId))))
             .ToList();
 
         var critical = aggregate.CriticalIncidents;
@@ -78,6 +81,8 @@ public sealed class TenantReportService
             ReportId = Guid.NewGuid().ToString("N"),
             TenantId = tenantId,
             CustomerName = tenant.Name,
+            TemplateId = template.TemplateId,
+            TemplateSnapshot = template,
             Title = string.IsNullOrWhiteSpace(request.Title)
                 ? $"{tenant.Name} Security Report"
                 : request.Title.Trim()[..Math.Min(request.Title.Trim().Length, 200)],
@@ -107,20 +112,20 @@ public sealed class TenantReportService
                 .GroupBy(item => item.SourceIp!, StringComparer.OrdinalIgnoreCase)
                 .OrderByDescending(group => group.Count())
                 .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-                .Take(10)
+                .Take(50)
                 .Select(group => new SecurityReportCountItem { Value = group.Key, Count = group.Count() })
                 .ToList(),
             TopEventIds = events
                 .GroupBy(item => item.EventId)
                 .OrderByDescending(group => group.Count())
                 .ThenBy(group => group.Key)
-                .Take(10)
+                .Take(50)
                 .Select(group => new SecurityReportCountItem { Value = group.Key.ToString(), Count = group.Count() })
                 .ToList(),
             PriorityIncidents = incidents
                 .OrderByDescending(item => item.Severity)
                 .ThenByDescending(item => item.LastSeenUtc)
-                .Take(12)
+                .Take(50)
                 .Select(item => new SecurityReportIncident
                 {
                     IncidentId = item.IncidentId,
@@ -143,6 +148,13 @@ public sealed class TenantReportService
 
     public static string RenderHtml(SecurityReportRecord report)
     {
+        if (report.TemplateSnapshot?.Blocks is { Count: > 0 })
+            return ReportTemplateRenderer.Render(report);
+        return RenderLegacyHtml(report);
+    }
+
+    private static string RenderLegacyHtml(SecurityReportRecord report)
+    {
         static string E(string? value) => WebUtility.HtmlEncode(value ?? string.Empty);
         var incidentRows = string.Join("", report.PriorityIncidents.Select(item =>
             $"<tr><td>{E(item.Severity.ToString())}</td><td>{E(item.Title)}</td><td>{E(item.SourceIp)}</td><td>{E(item.DestinationIp)}</td><td>{E(item.Status)}</td><td>{item.LastSeenUtc:yyyy-MM-dd HH:mm} UTC</td></tr>"));
@@ -154,7 +166,7 @@ public sealed class TenantReportService
         return $"""
             <!doctype html><html lang="th"><head><meta charset="utf-8"><title>{E(report.Title)}</title>
             {style}</head>
-            <body><header><small>NT SHIELD • TENANT SECURITY REPORT</small><h1>{E(report.Title)}</h1><p>{E(report.CustomerName)} · {report.PeriodStartUtc:yyyy-MM-dd} – {report.PeriodEndUtc:yyyy-MM-dd} UTC</p><button onclick="window.print()">Print / Save PDF</button></header>
+            <body><header><small>NT SHIELD • TENANT SECURITY REPORT</small><h1>{E(report.Title)}</h1><p>{E(report.CustomerName)} · {report.PeriodStartUtc:yyyy-MM-dd} – {report.PeriodEndUtc:yyyy-MM-dd} UTC</p></header>
             <section class="metrics"><div><small>Threat events</small><b>{report.Metrics.ThreatEvents:N0}</b></div><div><small>Incidents</small><b>{report.Metrics.Incidents:N0}</b></div><div><small>Threat campaigns</small><b>{report.Metrics.ThreatCampaigns:N0}</b></div><div><small>Defense score</small><b>{report.Metrics.DefenseScore}%</b></div><div><small>Agents online</small><b>{report.Metrics.OnlineAgents}/{report.Metrics.Agents}</b></div><div><small>Assets</small><b>{report.Metrics.Assets:N0}</b></div><div><small>Critical</small><b>{report.SeverityCounts.GetValueOrDefault("critical"):N0}</b></div><div><small>High</small><b>{report.SeverityCounts.GetValueOrDefault("high"):N0}</b></div></section>
             <h2>Priority incidents</h2><table><thead><tr><th>Severity</th><th>Incident</th><th>Source</th><th>Destination</th><th>Status</th><th>Last seen</th></tr></thead><tbody>{incidentRows}</tbody></table>
             <h2>Top source IPs</h2><ul class="counts">{sources}</ul><h2>Recommendations</h2><ol>{recommendations}</ol>
@@ -164,7 +176,15 @@ public sealed class TenantReportService
 
     public static string RenderCsv(SecurityReportRecord report)
     {
-        static string Csv(string? value) => $"\"{(value ?? string.Empty).Replace("\"", "\"\"")}\"";
+        static string Csv(string? value)
+        {
+            var safe = value ?? string.Empty;
+            var candidate = safe.TrimStart();
+            if ((safe.Length > 0 && safe[0] is '\t' or '\r' or '\n') ||
+                (candidate.Length > 0 && candidate[0] is '=' or '+' or '-' or '@'))
+                safe = "'" + safe;
+            return $"\"{safe.Replace("\"", "\"\"")}\"";
+        }
         var lines = new List<string>
         {
             "section,key,value",

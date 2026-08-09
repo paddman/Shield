@@ -3,17 +3,24 @@ using NTShield.Server.Data;
 using NTShield.Server.AI;
 using NTShield.Shared.Contracts;
 using NTShield.Shared.Models;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace NTShield.Server.Services;
 
 public sealed class IngestService
 {
+    private static readonly TimeSpan IdempotencyLeaseDuration = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan IdempotencyRenewInterval = TimeSpan.FromSeconds(30);
+    private const int MaxIdempotencyKeyLength = 512;
     private readonly ICentralStore _store;
     private readonly CrossHostCorrelator _correlator;
     private readonly LateralMovementTracker _lateral;
     private readonly ILogger<IngestService> _logger;
     private readonly TelemetryFeatureBuilder? _featureBuilder;
     private readonly AiAnomalyProxyService? _anomaly;
+    private readonly TemporalAttackChainService? _temporal;
 
     public IngestService(
         ICentralStore store,
@@ -21,7 +28,8 @@ public sealed class IngestService
         LateralMovementTracker lateral,
         ILogger<IngestService> logger,
         TelemetryFeatureBuilder? featureBuilder = null,
-        AiAnomalyProxyService? anomaly = null)
+        AiAnomalyProxyService? anomaly = null,
+        TemporalAttackChainService? temporal = null)
     {
         _store = store;
         _correlator = correlator;
@@ -29,6 +37,7 @@ public sealed class IngestService
         _logger = logger;
         _featureBuilder = featureBuilder;
         _anomaly = anomaly;
+        _temporal = temporal;
     }
 
     public async Task<IngestResponse> IngestAsync(
@@ -36,6 +45,7 @@ public sealed class IngestService
         CancellationToken cancellationToken,
         string tenantId = "default")
     {
+        tenantId = NormalizeTenantScope(tenantId);
         var count = batch.SecurityEvents.Count
                     + batch.NetworkConnections.Count
                     + batch.Processes.Count
@@ -43,11 +53,31 @@ public sealed class IngestService
                     + batch.ScheduledTasks.Count
                     + batch.Alerts.Count;
 
+        string? idempotencyKeyHash = null;
+        string? idempotencyAgentId = null;
+        string? idempotencyLeaseOwner = null;
+        var ownsIdempotencyClaim = false;
+        CancellationTokenSource? processingCts = null;
+        Task? renewalTask = null;
+        var leaseLost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         try
         {
             if (!string.IsNullOrWhiteSpace(batch.IdempotencyKey))
             {
-                if (await _store.HasIdempotencyKeyAsync(batch.IdempotencyKey))
+                idempotencyKeyHash = HashIdempotencyKey(batch.IdempotencyKey);
+                idempotencyAgentId = NormalizeAgentScope(batch.AgentId);
+                idempotencyLeaseOwner = Guid.NewGuid().ToString("N");
+                var claimedAtUtc = DateTimeOffset.UtcNow;
+                var claimState = await _store.TryClaimIngestIdempotencyAsync(
+                    tenantId,
+                    idempotencyAgentId,
+                    idempotencyKeyHash,
+                    idempotencyLeaseOwner,
+                    claimedAtUtc,
+                    claimedAtUtc.Add(IdempotencyLeaseDuration),
+                    cancellationToken);
+                if (claimState == IngestIdempotencyClaimState.Completed)
                 {
                     return new IngestResponse
                     {
@@ -57,14 +87,31 @@ public sealed class IngestService
                         Message = "duplicate idempotency key"
                     };
                 }
+                if (claimState == IngestIdempotencyClaimState.InProgress)
+                {
+                    return new IngestResponse
+                    {
+                        Accepted = false,
+                        Duplicate = true,
+                        ReceivedCount = 0,
+                        Message = "idempotency key is already processing; retry"
+                    };
+                }
+
+                ownsIdempotencyClaim = true;
+                processingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                renewalTask = RenewIdempotencyClaimAsync(
+                    tenantId,
+                    idempotencyAgentId,
+                    idempotencyKeyHash,
+                    idempotencyLeaseOwner,
+                    processingCts,
+                    leaseLost);
             }
 
-            await _store.SaveBatchAsync(batch);
-
-            if (!string.IsNullOrWhiteSpace(batch.IdempotencyKey))
-            {
-                await _store.SaveIdempotencyKeyAsync(batch.IdempotencyKey);
-            }
+            var processingToken = processingCts?.Token ?? cancellationToken;
+            await _store.SaveBatchAsync(batch, tenantId);
+            processingToken.ThrowIfCancellationRequested();
 
             // Phase 1: observe bounded telemetry features against the Brain's
             // per-tenant/per-asset baseline. This is intentionally fail-open;
@@ -77,26 +124,19 @@ public sealed class IngestService
                     batch.AgentId,
                     _featureBuilder.Build(batch),
                     batch.SentAtUtc,
-                    cancellationToken);
+                    processingToken);
             }
 
-            var incidents = (await _correlator.CorrelateAsync(batch, cancellationToken)).ToList();
-
-            // Detection alerts are already the agent's correlated output. Keep them
-            // visible in the same incident/campaign pipeline as Central-correlated
-            // security events instead of only storing them as raw batch telemetry.
-            incidents.AddRange(batch.Alerts
-                .Where(alert => !alert.Suppressed)
-                .Select(alert => IncidentFromAlert(alert, batch)));
+            var incidents = (await _correlator.CorrelateAsync(batch, processingToken, tenantId)).ToList();
 
             foreach (var incident in incidents)
             {
-                await _store.UpsertIncidentAsync(incident);
+                await _store.UpsertIncidentAsync(incident, tenantId);
                 _logger.LogWarning("INCIDENT\n{Display}", incident.FormatDisplay());
             }
 
             // Follow threats across hosts (A→B→C) without performing any offensive action.
-            var campaigns = _lateral.IngestIncidents(incidents);
+            var campaigns = _lateral.IngestIncidents(incidents, tenantId);
             if (anomaly is not null)
             {
                 _lateral.ApplyAnomaly(
@@ -106,7 +146,53 @@ public sealed class IngestService
                     anomaly.BaselineSamples,
                     anomaly.Model,
                     batch.SentAtUtc,
-                    anomaly.Contributors.Select(item => item.Name));
+                    anomaly.Contributors.Select(item => item.Name),
+                    tenantId);
+            }
+
+            // Phase 2 work is durably staged before the ingest idempotency key is
+            // committed. The worker can therefore retry after process/DB failures,
+            // including batches that do not yet match a legacy campaign.
+            if (_temporal is not null)
+            {
+                var campaignSnapshot = _lateral.ListCampaigns(500, tenantId).ToList();
+                var envelopeJson = JsonSerializer.Serialize(new TemporalCorrelationEnvelope
+                {
+                    Batch = CreateTemporalBatch(batch),
+                    Incidents = incidents,
+                    Campaigns = campaignSnapshot
+                }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                var workIdentity = !string.IsNullOrWhiteSpace(batch.IdempotencyKey)
+                    ? $"{tenantId}|{idempotencyAgentId}|{idempotencyKeyHash}"
+                    : $"{tenantId}|{batch.AgentId}|{batch.SentAtUtc:O}|{Guid.NewGuid():N}";
+                var workId = "temporal-" + Convert.ToHexString(
+                    SHA256.HashData(Encoding.UTF8.GetBytes(workIdentity))).ToLowerInvariant()[..32];
+                await _store.EnqueueTemporalCorrelationWorkAsync(new TemporalCorrelationWorkItem
+                {
+                    WorkId = workId,
+                    TenantId = tenantId,
+                    PayloadJson = envelopeJson,
+                    EnqueuedAtUtc = DateTimeOffset.UtcNow
+                }, processingToken);
+            }
+
+            if (ownsIdempotencyClaim)
+            {
+                processingCts!.Cancel();
+                if (renewalTask is not null) await AwaitRenewalShutdownAsync(renewalTask);
+                if (leaseLost.Task.IsCompleted)
+                    throw new InvalidOperationException("The ingest idempotency lease was lost before completion.");
+                if (!await _store.CompleteIngestIdempotencyClaimAsync(
+                        tenantId,
+                        idempotencyAgentId!,
+                        idempotencyKeyHash!,
+                        idempotencyLeaseOwner!,
+                        DateTimeOffset.UtcNow,
+                        CancellationToken.None))
+                {
+                    throw new InvalidOperationException("The ingest idempotency claim could not be completed by its owner.");
+                }
+                ownsIdempotencyClaim = false;
             }
             foreach (var campaign in campaigns.Where(c => c.Hops.Count > 1))
             {
@@ -130,6 +216,28 @@ public sealed class IngestService
         }
         catch (Exception ex)
         {
+            processingCts?.Cancel();
+            if (renewalTask is not null) await AwaitRenewalShutdownAsync(renewalTask);
+            if (ownsIdempotencyClaim)
+            {
+                try
+                {
+                    await _store.ReleaseIngestIdempotencyClaimAsync(
+                        tenantId,
+                        idempotencyAgentId!,
+                        idempotencyKeyHash!,
+                        idempotencyLeaseOwner!,
+                        CancellationToken.None);
+                }
+                catch (Exception releaseError)
+                {
+                    _logger.LogError(
+                        releaseError,
+                        "Failed releasing ingest idempotency claim tenant={Tenant} agent={AgentId}",
+                        tenantId,
+                        batch.AgentId);
+                }
+            }
             _logger.LogError(ex, "Ingest failed for agent {AgentId}", batch.AgentId);
             return new IngestResponse
             {
@@ -138,36 +246,110 @@ public sealed class IngestService
                 Message = ex.Message
             };
         }
-    }
-
-    private static Incident IncidentFromAlert(DetectionAlert alert, AgentIngestBatch batch)
-    {
-        var title = string.IsNullOrWhiteSpace(alert.Title)
-            ? (string.IsNullOrWhiteSpace(alert.RuleName) ? alert.RuleId : alert.RuleName)
-            : alert.Title;
-        var incidentId = string.IsNullOrWhiteSpace(alert.AlertId)
-            ? Guid.NewGuid().ToString("N")
-            : $"alert-{alert.AlertId}";
-
-        return new Incident
+        finally
         {
-            IncidentId = incidentId,
-            Title = string.IsNullOrWhiteSpace(title) ? "Detection alert" : title,
-            RuleId = alert.RuleId,
-            Severity = alert.Severity,
-            SourceIp = alert.SourceIp,
-            DestinationIp = alert.DestinationIp,
-            DestinationHost = string.IsNullOrWhiteSpace(alert.ComputerName) ? batch.ComputerName : alert.ComputerName,
-            DestinationAgentId = string.IsNullOrWhiteSpace(alert.AgentId) ? batch.AgentId : alert.AgentId,
-            Username = alert.Username,
-            FailedAttempts = alert.EventCount,
-            DistinctUsernames = alert.DistinctUserCount,
-            FirstSeen = alert.TimestampUtc,
-            LastSeen = alert.TimestampUtc,
-            Description = alert.Description,
-            CorrelationKey = $"alert|{alert.AlertId}",
-            EvidenceJson = alert.EvidenceJson,
-            Status = "Open"
-        };
+            processingCts?.Cancel();
+            processingCts?.Dispose();
+        }
     }
+
+    private async Task RenewIdempotencyClaimAsync(
+        string tenantId,
+        string agentId,
+        string keyHash,
+        string leaseOwner,
+        CancellationTokenSource processingCts,
+        TaskCompletionSource leaseLost)
+    {
+        try
+        {
+            while (!processingCts.IsCancellationRequested)
+            {
+                await Task.Delay(IdempotencyRenewInterval, processingCts.Token);
+                var now = DateTimeOffset.UtcNow;
+                if (await _store.RenewIngestIdempotencyClaimAsync(
+                        tenantId,
+                        agentId,
+                        keyHash,
+                        leaseOwner,
+                        now,
+                        now.Add(IdempotencyLeaseDuration),
+                        processingCts.Token))
+                    continue;
+
+                leaseLost.TrySetResult();
+                processingCts.Cancel();
+                _logger.LogError(
+                    "Lost ingest idempotency lease tenant={Tenant} agent={AgentId}",
+                    tenantId,
+                    agentId);
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (processingCts.IsCancellationRequested)
+        {
+            // Normal shutdown after completion, request cancellation, or failure.
+        }
+        catch (Exception ex)
+        {
+            leaseLost.TrySetResult();
+            processingCts.Cancel();
+            _logger.LogError(
+                ex,
+                "Failed renewing ingest idempotency lease tenant={Tenant} agent={AgentId}",
+                tenantId,
+                agentId);
+        }
+    }
+
+    private static async Task AwaitRenewalShutdownAsync(Task renewalTask)
+    {
+        try
+        {
+            await renewalTask;
+        }
+        catch (OperationCanceledException)
+        {
+            // The linked processing token is intentionally cancelled at shutdown.
+        }
+    }
+
+    private static string HashIdempotencyKey(string key)
+    {
+        key = key.Trim();
+        if (key.Length is < 1 or > MaxIdempotencyKeyLength)
+            throw new InvalidDataException(
+                $"Idempotency key must contain 1-{MaxIdempotencyKeyLength} characters.");
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant();
+    }
+
+    private static string NormalizeAgentScope(string agentId)
+    {
+        agentId = agentId?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (agentId.Length is < 1 or > 256)
+            throw new InvalidDataException("A valid authenticated agent id is required for idempotent ingest.");
+        return agentId;
+    }
+
+    private static string NormalizeTenantScope(string? tenantId) =>
+        string.IsNullOrWhiteSpace(tenantId) ? "default" : tenantId.Trim().ToLowerInvariant();
+
+    private static AgentIngestBatch CreateTemporalBatch(AgentIngestBatch batch) => new()
+    {
+        AgentId = batch.AgentId,
+        ComputerName = batch.ComputerName,
+        AgentVersion = batch.AgentVersion,
+        SentAtUtc = batch.SentAtUtc,
+        ClockSkewSeconds = batch.ClockSkewSeconds,
+        ClockSkewMeasuredAtUtc = batch.ClockSkewMeasuredAtUtc,
+        // The transport idempotency secret is not temporal evidence and must not
+        // be copied into a durable outbox payload.
+        IdempotencyKey = null,
+        SecurityEvents = batch.SecurityEvents,
+        NetworkConnections = batch.NetworkConnections,
+        Processes = batch.Processes,
+        Services = batch.Services,
+        ScheduledTasks = batch.ScheduledTasks,
+        Alerts = batch.Alerts
+    };
 }
