@@ -14,7 +14,7 @@ import (
 
 func TestRegisterThenIngestUsesIssuedAPIKey(t *testing.T) {
 	var gotKey string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/agents/register":
 			var req model.AgentRegistrationRequest
@@ -41,6 +41,9 @@ func TestRegisterThenIngestUsesIssuedAPIKey(t *testing.T) {
 
 	cfg := config.Default().Central
 	cfg.URL = server.URL
+	// The test TLS server uses an ephemeral self-signed certificate. Production
+	// configuration keeps this false and supplies system trust or ca_file.
+	cfg.InsecureSkipVerify = true
 	client, err := New(cfg, filepath.Join(t.TempDir(), "api-key"), "test-agent")
 	if err != nil {
 		t.Fatal(err)
@@ -57,5 +60,13 @@ func TestRegisterThenIngestUsesIssuedAPIKey(t *testing.T) {
 	}
 	if gotKey != "issued-key" {
 		t.Fatalf("got API key %q", gotKey)
+	}
+}
+
+func TestClientRejectsPlainHTTP(t *testing.T) {
+	cfg := config.Default().Central
+	cfg.URL = "http://127.0.0.1:7443"
+	if _, err := New(cfg, filepath.Join(t.TempDir(), "api-key"), "test-agent"); err == nil {
+		t.Fatal("expected plain HTTP Central URL to be rejected")
 	}
 }

@@ -6,12 +6,11 @@
 ;   Agent  -->  THIS Central API  <--  Dashboard
 ;
 ; Silent example:
-;   NTShield-Central-Setup-1.0.0.exe /VERYSILENT /Port=7443
-;   NTShield-Central-Setup.exe /VERYSILENT /Port=7443 /PublicHost=203.0.113.10
+;   NTShield-Central-Setup-1.3.1.exe /VERYSILENT /Port=7443 /PublicHost=shield.example.go.th
 
 #define MyAppName "NT Shield Central"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.0"
+  #define MyAppVersion "1.3.1"
 #endif
 #define MyAppPublisher "NT Shield Team"
 #define MyAppURL "https://github.com/paddman/Shield"
@@ -62,10 +61,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
 WelcomeLabel1=NT Shield Central Setup
-WelcomeLabel2=ยินดีต้อนรับสู่ตัวติดตั้ง Central Server (แยก)%n%nCentral คือศูนย์กลางที่ Agent ส่งข้อมูลเข้า และ Dashboard ดึงข้อมูลออก%n%nThis installs the Central API Windows Service only (default SQLite, HTTPS port 7443).%n%nAgent and Dashboard must both use this server URL.
+WelcomeLabel2=ยินดีต้อนรับสู่ตัวติดตั้ง Central Server%n%nCentral คือศูนย์ควบคุมที่ Agent ส่ง telemetry และ Operator ใช้อนุมัติ response%n%nการติดตั้งใหม่เปิด API authentication เป็นค่าเริ่มต้น สร้าง EnrollmentToken, OperatorApiKey และ action-signing key ใน protected secrets.json%n%nThis installs the authenticated Central API Windows Service on HTTPS port 7443.
 FinishedHeadingLabel=ติดตั้ง Central สำเร็จ
 FinishedLabelNoIcons=NT Shield Central ติดตั้งเรียบร้อยแล้ว!
-FinishedLabel=NT Shield Central ติดตั้งเรียบร้อยแล้ว!%n%nService: NTShieldCentral%nURL: https://localhost:<port>%n%nตั้ง Agent Server.Url และ Dashboard Settings ให้ชี้ URL นี้
+FinishedLabel=NT Shield Central ติดตั้งเรียบร้อยแล้ว!%n%nService: NTShieldCentral%nURL: https://localhost:<port>%n%nอ่าน EnrollmentToken / OperatorApiKey จาก protected Server\secrets.json ด้วยสิทธิ์ Administrator%nแจก central.cer ให้ Agent ถ้าไม่ได้ใช้ public PKI
 ClickFinish=คลิก Finish เพื่อปิดตัวติดตั้ง
 ButtonNext=Next >
 ButtonBack=< Back
@@ -88,7 +87,6 @@ Source: "{#SourceRoot}\installer\setup-helpers\stop-central-for-upgrade.ps1"; De
 Source: "{#SourceRoot}\assets\icons\NTShield.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\artifacts\server-win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\assets\icons\NTShield.ico"; DestDir: "{app}"; Flags: ignoreversion
-; Always ship CONNECTION info so desktop shortcut never breaks (register script refreshes host/port)
 Source: "{#SourceRoot}\installer\templates\CONNECTION.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\installer\templates\Open-Central-Info.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\config\signatures\opensource-signatures.json"; DestDir: "{app}\signatures"; Flags: ignoreversion skipifsourcedoesntexist
@@ -109,13 +107,12 @@ Name: "{group}\Central Logs"; Filename: "{commonappdata}\NTShield\Server\logs"; 
 Name: "{group}\Connection Info"; Filename: "{app}\Open-Central-Info.cmd"; IconFilename: "{app}\NTShield.ico"; WorkingDir: "{app}"
 Name: "{group}\Central Folder"; Filename: "{app}"; IconFilename: "{app}\NTShield.ico"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\NTShield.ico"
-; Desktop: open helper cmd (always present) — never a missing CONNECTION.txt target
-Name: "{autodesktop}\NT Shield Central"; Filename: "{app}\Open-Central-Info.cmd"; IconFilename: "{app}\NTShield.ico"; WorkingDir: "{app}"; Comment: "Central connection info (service runs in background)"; Tasks: desktopicon
+Name: "{autodesktop}\NT Shield Central"; Filename: "{app}\Open-Central-Info.cmd"; IconFilename: "{app}\NTShield.ico"; WorkingDir: "{app}"; Comment: "Central public connection info (service runs in background)"; Tasks: desktopicon
 
 [Run]
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Installer\register-central-service.ps1"" -InstallDir ""{app}"" -DataDir ""{commonappdata}\NTShield\Server"" -ServiceName ""NTShieldCentral"" -StartService {code:StartServiceFlag} -Port ""{code:GetPort}"" -PublicHost ""{code:GetPublicHost}"" -TrustCertificate ""1"" -RegenerateCertificate ""1"""; \
-  StatusMsg: "Registering Central service + HTTPS certificate..."; \
+  StatusMsg: "Registering authenticated Central service + HTTPS certificate..."; \
   Flags: runhidden waituntilterminated
 
 Filename: "powershell.exe"; \
@@ -166,27 +163,20 @@ var
 begin
   PortPage := CreateInputQueryPage(wpSelectDir,
     'Central HTTPS',
-    'พอร์ต + Public IP/DNS สำหรับ HTTPS',
-    'Agent และ Dashboard เชื่อมต่อ https://<host>:<port>%n%n' +
-    'ใส่ Public / NAT IP ถ้ามี (เช่น 203.0.113.10) เพื่อใส่ใน certificate SAN%n' +
-    'ว่างไว้ได้ — จะใส่ IP ของ NIC อัตโนมัติ%n%n' +
-    'Silent: /Port=7443 /PublicHost=203.0.113.10');
+    'พอร์ต + Public IP/DNS สำหรับ certificate SAN',
+    'Agent และ Dashboard เชื่อมต่อ https://<host>:<port>' + #13#10 +
+    'ใส่ DNS/Public/NAT IP ที่ Agent ใช้จริง เพื่อป้องกัน certificate name mismatch' + #13#10 +
+    'ว่างไว้ได้สำหรับ localhost + LAN NIC IPs' + #13#10 +
+    'Silent: /Port=7443 /PublicHost=shield.example.go.th');
   PortPage.Add('HTTPS Port:', False);
   PortPage.Add('Public Host / IP (optional):', False);
 
   CmdPort := GetCommandLineParam('Port');
-  if CmdPort <> '' then
-    PortPage.Values[0] := CmdPort
-  else
-    PortPage.Values[0] := '7443';
+  if CmdPort <> '' then PortPage.Values[0] := CmdPort else PortPage.Values[0] := '7443';
 
   CmdHost := GetCommandLineParam('PublicHost');
-  if CmdHost = '' then
-    CmdHost := GetCommandLineParam('ServerHost');
-  if CmdHost <> '' then
-    PortPage.Values[1] := CmdHost
-  else
-    PortPage.Values[1] := '';
+  if CmdHost = '' then CmdHost := GetCommandLineParam('ServerHost');
+  PortPage.Values[1] := CmdHost;
 end;
 
 procedure KillCentralProcesses;
@@ -220,8 +210,7 @@ begin
     GPublicHost := Trim(PortPage.Values[1]);
   end;
 
-  if CurPageID = wpReady then
-    KillCentralProcesses;
+  if CurPageID = wpReady then KillCentralProcesses;
 end;
 
 function GetPort(Param: String): String;
@@ -235,10 +224,7 @@ begin
   else
   begin
     CmdPort := GetCommandLineParam('Port');
-    if CmdPort <> '' then
-      Result := CmdPort
-    else
-      Result := '7443';
+    if CmdPort <> '' then Result := CmdPort else Result := '7443';
   end;
 end;
 
@@ -253,18 +239,14 @@ begin
   else
   begin
     CmdHost := GetCommandLineParam('PublicHost');
-    if CmdHost = '' then
-      CmdHost := GetCommandLineParam('ServerHost');
+    if CmdHost = '' then CmdHost := GetCommandLineParam('ServerHost');
     Result := CmdHost;
   end;
 end;
 
 function StartServiceFlag(Param: String): String;
 begin
-  if WizardIsTaskSelected('startservice') then
-    Result := '1'
-  else
-    Result := '0';
+  if WizardIsTaskSelected('startservice') then Result := '1' else Result := '0';
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -302,19 +284,17 @@ var
   HostHint: String;
 begin
   HostHint := GetPublicHost('');
-  if HostHint = '' then
-    HostHint := '<this-host-or-LAN-IP>';
+  if HostHint = '' then HostHint := '<this-host-or-LAN-IP>';
   Result :=
     MemoDirInfo + NewLine + NewLine +
-    'Central HTTPS URL:' + NewLine +
+    'Authenticated Central HTTPS URL:' + NewLine +
     Space + 'https://localhost:' + GetPort('') + NewLine +
     Space + 'https://' + HostHint + ':' + GetPort('') + NewLine + NewLine +
-    'Certificate: self-signed with SAN for localhost + NIC IPs';
-  if GetPublicHost('') <> '' then
-    Result := Result + ' + ' + GetPublicHost('');
-  Result := Result + NewLine +
-    'Service: NTShieldCentral' + NewLine +
-    'Database: SQLite (ProgramData\NTShield\Server\central.db)' + NewLine + NewLine +
-    'Agent/Dashboard: use remote URL (not localhost) + AllowUntrusted=true' + NewLine +
+    'Security defaults:' + NewLine +
+    Space + 'RequireAuth=true' + NewLine +
+    Space + 'Operator and enrollment keys in protected secrets.json' + NewLine +
+    Space + 'RSA-signed, target-bound response actions' + NewLine +
+    Space + 'Self-signed public certificate exported as central.cer' + NewLine + NewLine +
+    'Agent: import/trust central.cer or pass it as CaCertificatePath. Do not disable TLS validation.' + NewLine +
     MemoTasksInfo;
 end;

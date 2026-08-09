@@ -5,13 +5,22 @@ public sealed class SecurityOptions
     public const string SectionName = "Security";
     public const string ApiKeyHeader = "X-NTShield-Api-Key";
 
-    /// <summary>When true, API requires agent or operator keys (except public health).</summary>
-    public bool RequireAuth { get; set; }
+    /// <summary>
+    /// Secure default: every non-public API requires an operator or per-agent key.
+    /// Legacy soft mode must be selected explicitly and still never opens operator APIs.
+    /// </summary>
+    public bool RequireAuth { get; set; } = true;
+
+    /// <summary>
+    /// Emergency lab compatibility only. When true with RequireAuth=false, agent
+    /// telemetry paths may be anonymous. Operator/read/write APIs remain protected.
+    /// </summary>
+    public bool AllowLegacyAnonymousAgentIngest { get; set; }
 
     /// <summary>Shared secret for first-time agent registration.</summary>
     public string EnrollmentToken { get; set; } = "";
 
-    /// <summary>Dashboard / operator API key (plaintext in config or secrets file).</summary>
+    /// <summary>Dashboard / operator API key (plaintext only in protected Central secrets storage).</summary>
     public string OperatorApiKey { get; set; } = "";
 
     public bool AutoGenerateSecretsOnBoot { get; set; } = true;
@@ -44,4 +53,18 @@ public sealed class SecurityOptions
     public List<string> ApprovedAgentSha256 { get; set; } = [];
 
     public string? PolicySigningPublicKeyPem { get; set; }
+
+    /// <summary>Central-only RSA private key used to sign destructive response actions.</summary>
+    public string ActionSigningPrivateKeyPem { get; set; } = "";
+
+    /// <summary>RSA public key distributed to agents through versioned policy.</summary>
+    public string ActionSigningPublicKeyPem { get; set; } = "";
+
+    public string ActionSigningKeyId { get; set; } = "";
+
+    /// <summary>Default validity window for an approved destructive action.</summary>
+    public int ActionLifetimeMinutes { get; set; } = 5;
+
+    /// <summary>Hard upper bound for a client-requested action validity window.</summary>
+    public int MaxActionLifetimeMinutes { get; set; } = 15;
 }

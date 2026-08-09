@@ -1,3 +1,5 @@
+using NTShield.Shared.Security;
+
 namespace NTShield.Core.Configuration;
 
 /// <summary>
@@ -88,6 +90,12 @@ public sealed class RuntimePolicyState
 
     public void SeedFromLocal(AgentOptions agent, ResponseOptions response)
     {
+        // AgentIdentity is initialized and DataDirectory is created before this
+        // method. Bind and persist signed-action replay state per endpoint.
+        ActionApprovalCrypto.ConfigureExpectedAgentId(agent.AgentId);
+        ActionApprovalCrypto.ConfigureReplayLedger(
+            Path.Combine(agent.DataDirectory, "action-replay.log"));
+
         lock (_gate)
         {
             _mode = string.IsNullOrWhiteSpace(agent.Mode) ? response.Mode : agent.Mode;
@@ -107,6 +115,21 @@ public sealed class RuntimePolicyState
         lock (_gate)
         {
             if (policy.PolicyVersion <= _policyVersion) return false;
+
+            if (!string.IsNullOrWhiteSpace(policy.ActionSigningPublicKeyPem))
+            {
+                try
+                {
+                    ActionApprovalCrypto.ConfigureTrustedPublicKey(
+                        policy.ActionSigningPublicKeyPem,
+                        policy.ActionSigningKeyId);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
             _policyVersion = policy.PolicyVersion;
             if (!string.IsNullOrWhiteSpace(policy.Mode))
                 _mode = policy.Mode;

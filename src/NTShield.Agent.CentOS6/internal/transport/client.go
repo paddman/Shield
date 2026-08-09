@@ -38,6 +38,10 @@ func New(cfg config.CentralConfig, apiKeyPath, userAgent string) (*Client, error
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return nil, fmt.Errorf("invalid Central URL %q", cfg.URL)
 	}
+	if !strings.EqualFold(base.Scheme, "https") {
+		return nil, fmt.Errorf("Central URL must use HTTPS, got %q", cfg.URL)
+	}
+
 	tlsConfig := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: cfg.InsecureSkipVerify, // #nosec G402: explicit legacy-lab option, false by default.
@@ -109,6 +113,9 @@ func (c *Client) Register(ctx context.Context, request model.AgentRegistrationRe
 		if err := c.SetAPIKey(response.AgentAPIKey); err != nil {
 			return response, fmt.Errorf("store API key: %w", err)
 		}
+		c.mu.Lock()
+		c.enrollToken = ""
+		c.mu.Unlock()
 	}
 	return response, nil
 }

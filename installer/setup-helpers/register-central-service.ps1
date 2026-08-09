@@ -7,11 +7,11 @@ param(
     [string]$DisplayName = "NT Shield Central",
     [string]$StartService = "1",
     [string]$Port = "7443",
-    # Public / NAT IP or DNS for HTTPS cert SAN (e.g. 203.0.113.10)
+    # Public / NAT IP or DNS for HTTPS cert SAN (e.g. shield.example.go.th)
     [string]$PublicHost = "",
-    # 1 = import generated cert into LocalMachine\Root (browser trust on this host)
+    # 1 = import generated public cert into LocalMachine\Root on this host
     [string]$TrustCertificate = "1",
-    # 1 = delete existing central.pfx so Central recreates with new SANs
+    # 1 = intentionally rotate the existing Central HTTPS certificate
     [string]$RegenerateCertificate = "0"
 )
 
@@ -20,25 +20,45 @@ $LogDir = Join-Path $DataDir "logs"
 $DbPath = Join-Path $DataDir "central.db"
 $exe = Join-Path $InstallDir "NTShield.Server.exe"
 
-if (-not (Test-Path $exe)) {
+function Protect-SecretFile([string]$Path) {
+    if (-not (Test-Path $Path -PathType Leaf)) { return }
+    try {
+        # LocalSystem SID and built-in Administrators SID; locale-independent.
+        & icacls.exe $Path /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+        Write-Host "OK: restricted ACL -> $Path"
+    } catch {
+        throw "Could not secure ACL on $Path : $_"
+    }
+}
+
+function Protect-PrivateCertificate([string]$Path) {
+    if (-not (Test-Path $Path -PathType Leaf)) { return }
+    try {
+        & icacls.exe $Path /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+        Write-Host "OK: restricted certificate ACL -> $Path"
+    } catch {
+        throw "Could not secure certificate ACL on $Path : $_"
+    }
+}
+
+if (-not (Test-Path $exe -PathType Leaf)) {
     throw "Central executable not found: $exe"
 }
 
 $SigDir = Join-Path $DataDir "signatures"
-New-Item -ItemType Directory -Force -Path $DataDir, $LogDir, (Join-Path $DataDir "certs"), $SigDir | Out-Null
+$CertDir = Join-Path $DataDir "certs"
+New-Item -ItemType Directory -Force -Path $DataDir, $LogDir, $CertDir, $SigDir | Out-Null
 
 # Open-source signature pack
 $sigSrc = Join-Path $InstallDir "signatures\opensource-signatures.json"
-if (-not (Test-Path $sigSrc)) {
-    $sigSrc = Join-Path $InstallDir "opensource-signatures.json"
-}
+if (-not (Test-Path $sigSrc)) { $sigSrc = Join-Path $InstallDir "opensource-signatures.json" }
 $sigDst = Join-Path $SigDir "opensource-signatures.json"
-if (Test-Path $sigSrc) {
+if (Test-Path $sigSrc -PathType Leaf) {
     Copy-Item $sigSrc $sigDst -Force
     Write-Host "OK: open-source signatures -> $sigDst"
 }
 
-# Force-stop old instance (in-place upgrade)
+# Force-stop old instance for in-place upgrade.
 $ErrorActionPreference = "SilentlyContinue"
 & sc.exe stop $ServiceName | Out-Null
 Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
@@ -52,34 +72,7 @@ $portNum = 7443
 [void][int]::TryParse($Port, [ref]$portNum)
 if ($portNum -lt 1 -or $portNum -gt 65535) { $portNum = 7443 }
 
-# Pre-create secrets so separate Agent installs can enroll (also written to connection.json)
-$secretsPath = Join-Path $DataDir "secrets.json"
-$enrollToken = ""
-$operatorKey = ""
-if (Test-Path $secretsPath) {
-    try {
-        $sec = Get-Content $secretsPath -Raw | ConvertFrom-Json
-        $enrollToken = [string]$sec.EnrollmentToken
-        $operatorKey = [string]$sec.OperatorApiKey
-    } catch { }
-}
-if (-not $enrollToken) {
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $b1 = New-Object byte[] 32
-    $b2 = New-Object byte[] 32
-    $rng.GetBytes($b1); $rng.GetBytes($b2)
-    $enrollToken = ([BitConverter]::ToString($b1) -replace '-','').ToLowerInvariant()
-    $operatorKey = ([BitConverter]::ToString($b2) -replace '-','').ToLowerInvariant()
-    @{
-        GeneratedAtUtc    = (Get-Date).ToUniversalTime().ToString("o")
-        EnrollmentToken   = $enrollToken
-        OperatorApiKey    = $operatorKey
-        Note              = "Copy EnrollmentToken to Agents. Copy OperatorApiKey to Dashboard Settings."
-    } | ConvertTo-Json | Set-Content $secretsPath -Encoding UTF8
-    Write-Host "OK: generated secrets.json (Enrollment + Operator keys)"
-}
-
-# Detect public/LAN hosts for cert SAN + connection hints
+# Detect public/LAN hosts for certificate SAN and public connection metadata.
 $publicHostClean = ($PublicHost -replace '^\s+|\s+$', '')
 if ($publicHostClean -match '^https?://') {
     try { $publicHostClean = ([Uri]$publicHostClean).Host } catch { }
@@ -95,53 +88,89 @@ try {
         Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
         ForEach-Object { if (-not $allSans.Contains($_.IPAddress)) { [void]$allSans.Add($_.IPAddress) } }
 } catch { }
-
 $extraSans = ($allSans -join ',')
-$certPath = Join-Path $DataDir "certs\central.pfx"
-$certDir = Join-Path $DataDir "certs"
-New-Item -ItemType Directory -Force -Path $certDir | Out-Null
 
-# Force cert recreate when PublicHost set or explicit flag (old certs only had localhost)
-$regen = ($RegenerateCertificate -eq "1") -or ($publicHostClean -ne "")
-if ($regen -and (Test-Path $certPath)) {
-    $bak = "$certPath.bak.$(Get-Date -Format 'yyyyMMddHHmmss')"
+$certPath = Join-Path $CertDir "central.pfx"
+$cerPath = [System.IO.Path]::ChangeExtension($certPath, ".cer")
+$secretsPath = Join-Path $DataDir "secrets.json"
+
+# Preserve a custom existing certificate password, but migrate the historic
+# repository-wide password by rotating the certificate once.
+$existingPassword = ""
+$oldAppsettings = Join-Path $InstallDir "appsettings.json"
+if (Test-Path $oldAppsettings -PathType Leaf) {
     try {
-        Copy-Item $certPath $bak -Force
-        Remove-Item $certPath -Force
-        Write-Host "OK: removed old cert (backup $bak) — Central will issue new SAN cert"
-    } catch {
-        Write-Warning "Could not remove old cert: $_"
-    }
+        $oldConfig = Get-Content $oldAppsettings -Raw | ConvertFrom-Json
+        if ($oldConfig.Security -and $oldConfig.Security.CertificatePassword) {
+            $existingPassword = [string]$oldConfig.Security.CertificatePassword
+        }
+    } catch { }
 }
 
-# Write/patch appsettings for this install
+$certificatePassword = $existingPassword
+$regen = ($RegenerateCertificate -eq "1") -or ($publicHostClean -ne "")
+if ($certificatePassword -eq "NTShield!") {
+    Write-Warning "Migrating the legacy shared PFX password by rotating central.pfx. Remote clients must trust the newly exported central.cer."
+    $certificatePassword = ""
+    $regen = $true
+}
+
+if ($regen -and (Test-Path $certPath -PathType Leaf)) {
+    $backup = "$certPath.bak.$(Get-Date -Format 'yyyyMMddHHmmss')"
+    Copy-Item $certPath $backup -Force
+    Remove-Item $certPath -Force
+    if (Test-Path $cerPath) { Remove-Item $cerPath -Force }
+    Write-Host "OK: existing certificate backed up to $backup; Central will issue a new SAN certificate"
+}
+
+# Do not put EnrollmentToken, OperatorApiKey, private action-signing key or other
+# credentials into appsettings.json. SecretBootstrapper generates/loads them only
+# from the protected server-side secrets.json file.
 $appsettings = Join-Path $InstallDir "appsettings.json"
 $config = @{
     Kestrel      = @{ Port = $portNum }
     Security     = @{
-        EnableMtls                  = $false
-        RequireAuth                 = $false
-        AutoGenerateSecretsOnBoot   = $true
-        SecretsFilePath             = $secretsPath
-        EnrollmentToken             = $enrollToken
-        OperatorApiKey              = $operatorKey
-        CertificatePath             = $certPath
-        CertificatePassword         = "NTShield!"
-        CertificateExtraSans        = $extraSans
-        PublicHost                  = $publicHostClean
-        RegenerateCertificate       = $false
+        EnableMtls                        = $false
+        RequireAuth                       = $true
+        AllowLegacyAnonymousAgentIngest   = $false
+        AutoGenerateSecretsOnBoot         = $true
+        SecretsFilePath                   = $secretsPath
+        EnrollmentToken                   = ""
+        OperatorApiKey                    = ""
+        CertificatePath                   = $certPath
+        CertificatePassword               = $certificatePassword
+        CertificateExtraSans              = $extraSans
+        PublicHost                        = $publicHostClean
+        RegenerateCertificate             = $false
+        RequireSignedAgent                = $false
+        ApprovedAgentSha256                = @()
+        ActionSigningPrivateKeyPem         = ""
+        ActionSigningPublicKeyPem          = ""
+        ActionSigningKeyId                 = ""
+        ActionLifetimeMinutes              = 5
+        MaxActionLifetimeMinutes           = 15
+    }
+    LLMGateway   = @{
+        Enabled                  = $true
+        BaseUrl                  = "http://127.0.0.1:8000/v1"
+        ApiKey                   = ""
+        Model                    = ""
+        SkipTlsVerify            = $false
+        TimeoutSeconds           = 120
+        DefaultTokenLifetimeDays = 90
+        MaxTokenLifetimeDays     = 3650
     }
     Database     = @{ Provider = "Sqlite" }
     Sqlite       = @{ DatabasePath = $DbPath }
     Postgres     = @{
-        ConnectionString = "Host=127.0.0.1;Port=5432;Database=ntshield;Username=ntshield;Password=ntshield"
+        ConnectionString = "Host=127.0.0.1;Port=5432;Database=ntshield;Username=ntshield;Password=CHANGE_ME"
     }
     Syslog       = @{
         Enabled                   = $true
         UdpPort                   = 5514
         TcpPort                   = 0
         MatchOpenSourceSignatures = $true
-        SignaturesPath            = (Join-Path $DataDir "signatures\opensource-signatures.json")
+        SignaturesPath            = $sigDst
     }
     Correlation  = @{ TimestampToleranceSeconds = 120 }
     LoggingPaths = @{ Directory = $LogDir }
@@ -153,8 +182,8 @@ $config = @{
     }
     AllowedHosts = "*"
 }
-$config | ConvertTo-Json -Depth 10 | Set-Content -Path $appsettings -Encoding UTF8
-Write-Host "OK: appsettings.json Port=$portNum Sqlite=$DbPath"
+$config | ConvertTo-Json -Depth 12 | Set-Content -Path $appsettings -Encoding UTF8
+Write-Host "OK: hardened appsettings.json Port=$portNum RequireAuth=true Sqlite=$DbPath"
 
 # Event source
 $source = "NTShieldCentral"
@@ -175,15 +204,13 @@ $binPath = "`"$exe`""
 New-Service -Name $ServiceName `
     -BinaryPathName $binPath `
     -DisplayName $DisplayName `
-    -Description "NT Shield Central API - Agents and Dashboard connect here (port $portNum)" `
+    -Description "NT Shield Central API - authenticated Agent and Operator control plane (port $portNum)" `
     -StartupType Automatic | Out-Null
 
-# Automatic (not delayed) so Agent can connect soon after reboot
 & sc.exe config $ServiceName start= auto | Out-Null
 & sc.exe failure $ServiceName reset= 86400 actions= restart/10000/restart/30000/restart/60000 | Out-Null
 & sc.exe failureflag $ServiceName 1 | Out-Null
 
-# Content root env for ASP.NET (exe directory usually enough)
 $reg = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
 $envVals = @(
     "ASPNETCORE_CONTENTROOT=$InstallDir",
@@ -196,17 +223,48 @@ try {
 if ($StartService -eq "1") {
     Start-Service -Name $ServiceName
     Start-Sleep -Seconds 4
-    $svc = Get-Service -Name $ServiceName
-    Write-Host "Service $ServiceName : $($svc.Status)"
+    $service = Get-Service -Name $ServiceName
+    Write-Host "Service $ServiceName : $($service.Status)"
+    if ($service.Status -ne "Running") {
+        throw "Central service did not reach Running state. Check $LogDir"
+    }
 
-    # After first start, Central writes central.pfx + central.cer — optionally trust for browsers on this host
-    if ($TrustCertificate -eq "1") {
-        $cerPath = [System.IO.Path]::ChangeExtension($certPath, ".cer")
-        $deadline = (Get-Date).AddSeconds(20)
-        while (-not (Test-Path $cerPath) -and (Get-Date) -lt $deadline) {
-            Start-Sleep -Milliseconds 500
+    # Wait for Central to generate the complete secret set and public certificate.
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((-not (Test-Path $secretsPath -PathType Leaf) -or -not (Test-Path $cerPath -PathType Leaf)) -and
+           (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+    }
+
+    if (-not (Test-Path $secretsPath -PathType Leaf)) {
+        throw "Central did not create protected secrets.json. Refusing an apparently open or incomplete installation."
+    }
+    Protect-SecretFile $secretsPath
+    if (Test-Path $certPath -PathType Leaf) { Protect-PrivateCertificate $certPath }
+
+    # Verify the P0 bootstrap material exists without printing any secret value.
+    try {
+        $secrets = Get-Content $secretsPath -Raw | ConvertFrom-Json
+        $missing = New-Object System.Collections.Generic.List[string]
+        foreach ($name in @(
+            "EnrollmentToken",
+            "OperatorApiKey",
+            "ActionSigningPrivateKeyPem",
+            "ActionSigningPublicKeyPem",
+            "ActionSigningKeyId"
+        )) {
+            if (-not $secrets.$name) { [void]$missing.Add($name) }
         }
-        if (Test-Path $cerPath) {
+        if ($missing.Count -gt 0) {
+            throw "Missing bootstrap fields: $($missing -join ', ')"
+        }
+        Write-Host "OK: enrollment, operator and action-signing secrets generated in protected storage"
+    } catch {
+        throw "Central secrets validation failed: $_"
+    }
+
+    if ($TrustCertificate -eq "1") {
+        if (Test-Path $cerPath -PathType Leaf) {
             try {
                 $certObj = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cerPath)
                 $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
@@ -215,26 +273,22 @@ if ($StartService -eq "1") {
                 $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
                 $store.Add($certObj)
                 $store.Close()
-                Write-Host "OK: trusted HTTPS cert in LocalMachine\Root thumbprint=$($certObj.Thumbprint)"
+                Write-Host "OK: trusted Central certificate on this host thumbprint=$($certObj.Thumbprint)"
             } catch {
-                Write-Warning "Could not import cert to Trusted Root: $_"
+                Write-Warning "Could not import central.cer into LocalMachine\Root: $_"
             }
         } else {
-            Write-Warning "central.cer not found yet — run Installer\regenerate-central-cert.ps1 later to trust"
+            Write-Warning "central.cer was not exported. Remote Agents must receive another trusted certificate before enrollment."
         }
     }
 }
 
-# Always write CONNECTION.txt (desktop / Start Menu rely on this)
 $hostName = $env:COMPUTERNAME
 try { $hostName = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).Name } catch { }
 $centralVer = "?"
 try {
-    $exe = Join-Path $InstallDir "NTShield.Server.exe"
-    if (Test-Path $exe) {
-        $centralVer = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion
-        if (-not $centralVer) { $centralVer = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion }
-    }
+    $centralVer = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion
+    if (-not $centralVer) { $centralVer = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion }
 } catch { }
 $lanIp = $null
 try {
@@ -251,37 +305,33 @@ Product      : NT Shield Central
 Version      : $centralVer
 URL (local)  : https://localhost:$portNum
 URL (remote) : https://${remoteHost}:$portNum
-Public host  : $(if ($publicHostClean) { $publicHostClean } else { '(set PublicHost for NAT/public IP SAN)' })
+Public host  : $(if ($publicHostClean) { $publicHostClean } else { '(set PublicHost for DNS/NAT certificate SAN)' })
 Cert SANs    : $extraSans
-Cert PFX     : $certPath
-Cert CER     : $([System.IO.Path]::ChangeExtension($certPath, '.cer'))
-Syslog UDP   : 5514 (open-source signatures)
-Signatures   : $DataDir\signatures\opensource-signatures.json
+Cert PFX     : $certPath  (private; SYSTEM/Administrators only)
+Cert CER     : $cerPath   (public; distribute to Agents when not using public PKI)
+Syslog UDP   : 5514
 Service      : $ServiceName
 Install dir  : $InstallDir
 Data         : $DataDir
-Database     : $DbPath (SQLite)
-Secrets      : $secretsPath
-Shared link  : C:\ProgramData\NTShield\connection.json
+Database     : $DbPath (SQLite lab/small deployment)
+Secrets      : $secretsPath  (SYSTEM/Administrators only)
+Metadata     : C:\ProgramData\NTShield\connection.json  (contains no credentials)
 
-IMPORTANT — HTTPS / separate Agent installs:
-  Do NOT use localhost on remote PCs.
-  Agent Server.Url = https://${remoteHost}:$portNum
-  EnrollmentToken  = (from secrets.json or connection.json)
-  AllowUntrustedServerCertificate = true  (required for self-signed)
-  Or import central.cer into Trusted Root on client machines.
+SECURE AGENT PROVISIONING:
+  1. Use https://${remoteHost}:$portNum, never localhost from another PC.
+  2. Trust $cerPath on the Agent or pass it as CaCertificatePath.
+  3. Read EnrollmentToken from protected secrets.json as Administrator.
+  4. After enrollment the Agent stores a per-agent key and removes its enrollment token.
+  5. Never set AllowUntrustedServerCertificate=true outside an isolated migration lab.
 
-Dashboard Settings URL = same as Agent Server.Url
-Operator API Key       = OperatorApiKey from secrets.json
+CONTROL CENTER:
+  URL              = https://${remoteHost}:$portNum
+  Operator API Key = read OperatorApiKey from protected secrets.json
 
-Health (skip cert check if self-signed):
-  curl.exe -k https://${remoteHost}:$portNum/api/v1/health
-  curl.exe -k https://localhost:$portNum/api/v1/health
+Health with trusted certificate:
+  curl.exe --cacert "$cerPath" https://${remoteHost}:$portNum/api/v1/health
 
-Regenerate cert with public IP (Admin):
-  powershell -File "$InstallDir\Installer\regenerate-central-cert.ps1" -PublicHost $remoteHost
-
-Start / stop (Admin PowerShell):
+Start / stop (Administrator PowerShell):
   Start-Service $ServiceName
   Stop-Service $ServiceName
   Get-Service $ServiceName
@@ -292,12 +342,12 @@ Logs:
 try {
     Set-Content -Path (Join-Path $InstallDir "CONNECTION.txt") -Value $hint -Encoding UTF8 -Force
     Set-Content -Path (Join-Path $DataDir "CONNECTION.txt") -Value $hint -Encoding UTF8 -Force
-    Write-Host "OK: CONNECTION.txt written"
+    Write-Host "OK: CONNECTION.txt written without credentials"
 } catch {
     Write-Warning "Could not write CONNECTION.txt: $_"
 }
 
-# Shared file for separate Agent / Dashboard installs (same PC or copy to remote)
+# Public discovery metadata only. Credentials remain in protected secrets.json.
 try {
     $writeConn = Join-Path $PSScriptRoot "write-connection-info.ps1"
     if (-not (Test-Path $writeConn)) {
@@ -305,11 +355,12 @@ try {
     }
     if (Test-Path $writeConn) {
         & $writeConn -CentralUrl "https://${remoteHost}:$portNum" -DataDir $DataDir -Port $portNum `
-            -EnrollmentToken $enrollToken -OperatorApiKey $operatorKey
+            -CaCertificatePath $(if (Test-Path $cerPath -PathType Leaf) { $cerPath } else { "" })
     }
 } catch {
-    Write-Warning "Could not write connection.json: $_"
+    Write-Warning "Could not write public connection metadata: $_"
 }
 
 Write-Host "Central service registered: $ServiceName on port $portNum"
-Write-Host "Remote agents must use: https://${remoteHost}:$portNum  (not localhost)"
+Write-Host "RequireAuth=true; anonymous operator/action APIs are disabled"
+Write-Host "Remote Agents must use https://${remoteHost}:$portNum with a trusted certificate"
