@@ -17,6 +17,7 @@ public static class ActionApprovalCrypto
     private static string? _signingPrivateKeyPem;
     private static string? _trustedPublicKeyPem;
     private static string? _trustedKeyId;
+    private static string? _expectedAgentId;
 
     public static string? TrustedPublicKeyPem
     {
@@ -34,11 +35,34 @@ public static class ActionApprovalCrypto
         }
     }
 
+    public static string? ExpectedAgentId
+    {
+        get
+        {
+            lock (Gate) return _expectedAgentId;
+        }
+    }
+
     public static bool HasSigningKey
     {
         get
         {
             lock (Gate) return !string.IsNullOrWhiteSpace(_signingPrivateKeyPem);
+        }
+    }
+
+    /// <summary>
+    /// Pin the identity of the local agent process. Once configured, a valid
+    /// Central signature for another endpoint is still rejected locally.
+    /// Passing null/blank clears the binding for Central-side signing/tests.
+    /// </summary>
+    public static void ConfigureExpectedAgentId(string? agentId)
+    {
+        lock (Gate)
+        {
+            _expectedAgentId = string.IsNullOrWhiteSpace(agentId)
+                ? null
+                : agentId.Trim();
         }
     }
 
@@ -58,7 +82,6 @@ public static class ActionApprovalCrypto
         using var publicKey = RSA.Create();
         publicKey.ImportFromPem(publicKeyPem);
 
-        // Refuse a mismatched pair instead of producing actions no agent can verify.
         var probe = RandomNumberGenerator.GetBytes(32);
         var probeSignature = privateKey.SignHash(
             probe,
@@ -91,7 +114,6 @@ public static class ActionApprovalCrypto
         if (string.IsNullOrWhiteSpace(publicKeyPem))
             throw new ArgumentException("Action signing public key is empty.", nameof(publicKeyPem));
 
-        // Validate PEM eagerly so malformed policy cannot silently disable response.
         using var publicKey = RSA.Create();
         publicKey.ImportFromPem(publicKeyPem);
 
@@ -209,10 +231,18 @@ public static class ActionApprovalCrypto
 
         string? publicKeyPem;
         string? trustedKeyId;
+        string? expectedAgentId;
         lock (Gate)
         {
             publicKeyPem = _trustedPublicKeyPem;
             trustedKeyId = _trustedKeyId;
+            expectedAgentId = _expectedAgentId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(expectedAgentId) &&
+            !string.Equals(expectedAgentId, request.TargetAgentId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
         }
 
         if (string.IsNullOrWhiteSpace(publicKeyPem) ||
