@@ -196,7 +196,7 @@ Filename: "powershell.exe"; \
   Components: agent
 
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Start-Service NTShieldAgent; Start-Sleep -Seconds 2; if ((Get-Service NTShieldAgent).Status -ne 'Running') { throw 'NTShieldAgent failed to start' }"""; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Start-Service NTShieldAgent; Start-Sleep -Seconds 2; if ((Get-Service NTShieldAgent).Status -ne 'Running') {{ throw 'NTShieldAgent failed to start' }"""; \
   StatusMsg: "Starting securely provisioned Agent..."; \
   Flags: runhidden waituntilterminated; \
   Components: agent; \
