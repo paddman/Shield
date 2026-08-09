@@ -52,6 +52,7 @@
 .threat-status-chip { display: inline-flex; align-items: center; height: 28px; padding: 0 9px; border-radius: 7px; background: #eaf7f0; color: var(--green); font-size: 9px; font-weight: 850; }
 .threat-status-chip.closed { background: #eef0f3; color: #6d7787; }
 .threat-status-chip.alert { background: #ffeaeb; color: var(--red); }
+.threat-status-chip.candidate { background: #fff6df; color: #9a6400; }
 .threat-graph-viewport { position: relative; flex: 1; min-height: 335px; overflow: hidden; background: radial-gradient(circle at 48% 46%, rgba(255,196,0,.11), transparent 37%), linear-gradient(180deg, #ffffff, #fbfcfd); }
 .threat-graph-viewport::before { content: ""; position: absolute; inset: 0; opacity: .6; background-image: linear-gradient(rgba(131,144,159,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(131,144,159,.045) 1px, transparent 1px); background-size: 36px 36px; mask-image: linear-gradient(to bottom, transparent, #000 18%, #000 83%, transparent); pointer-events: none; }
 .threat-graph-toolbar { position: absolute; z-index: 5; top: 12px; left: 15px; right: 15px; display: flex; justify-content: flex-end; gap: 13px; color: #7b8694; font-size: 9px; }

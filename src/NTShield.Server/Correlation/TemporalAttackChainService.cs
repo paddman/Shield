@@ -200,6 +200,18 @@ public sealed class TemporalAttackChainService
                      .Select(group => group.First())
                      .Take(500))
         {
+            // A recurrence candidate is only meaningful when both sides of the
+            // contact have a stable identity. Security events with no source
+            // IP/host/agent are common local audit noise; grouping those rows
+            // would turn an unknown endpoint into an active threat. Keep the
+            // raw observation staged for audit/rebuild, but do not promote it.
+            if (!HasStableEndpointContext(seed))
+            {
+                await DowngradeUncorroboratedRecurrenceAsync(
+                    tenantId, seed, ingestedAtUtc, cancellationToken);
+                continue;
+            }
+
             var recent = await _store.ListThreatCandidateContextObservationsAsync(
                 tenantId, seed.SourceNodeId, seed.DestinationNodeId,
                 ingestedAtUtc.AddDays(-7), ingestedAtUtc.AddMinutes(5), 500, cancellationToken);
@@ -210,9 +222,13 @@ public sealed class TemporalAttackChainService
                 .OrderBy(item => item.ObservedAtUtc)
                 .ToList();
             var categories = CandidateEvidenceCategories(candidates);
-            var confidence = Math.Min(.95, .55 + Math.Min(candidates.Count, 5) * .05 +
+            var rawConfidence = Math.Min(.95, .55 + Math.Min(candidates.Count, 5) * .05 +
                 Math.Max(0, categories.Count - 1) * .10);
-            var confirmed = candidates.Count >= 3 && categories.Count >= 2 && confidence >= .80;
+            var confirmed = candidates.Count >= 3 && categories.Count >= 2 && rawConfidence >= .80;
+            // The wire contract reserves >=.80 for corroborated campaigns. A
+            // periodic-only candidate may be highly repeatable, but remains
+            // inferred until an independent evidence category arrives.
+            var confidence = confirmed ? rawConfidence : Math.Min(.79, rawConfidence);
             var candidateOnly = candidates.Count >= 5;
             if (!confirmed && !candidateOnly) continue;
 
@@ -221,8 +237,12 @@ public sealed class TemporalAttackChainService
             if (!handledCampaigns.Add(campaignId)) continue;
             var existing = await _store.GetThreatCampaignV2SummaryAsync(
                 tenantId, campaignId, cancellationToken);
+            var refreshInferredCandidate = existing is not null && !confirmed &&
+                string.Equals(existing.Status, "Candidate", StringComparison.OrdinalIgnoreCase) &&
+                (existing.Confidence ?? 0) > .79;
             if (existing is null || (confirmed &&
-                string.Equals(existing.Status, "Candidate", StringComparison.OrdinalIgnoreCase)))
+                string.Equals(existing.Status, "Candidate", StringComparison.OrdinalIgnoreCase)) ||
+                refreshInferredCandidate)
             {
                 var first = candidates[0];
                 var last = candidates[^1];
@@ -695,6 +715,49 @@ public sealed class TemporalAttackChainService
         string.Compare(item.SourceNodeId, item.DestinationNodeId, StringComparison.Ordinal) <= 0
             ? $"{item.SourceNodeId}|{item.DestinationNodeId}"
             : $"{item.DestinationNodeId}|{item.SourceNodeId}";
+
+    private async Task DowngradeUncorroboratedRecurrenceAsync(
+        string tenantId,
+        ThreatObservation seed,
+        DateTimeOffset updatedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        var campaignId = "recurrence-" + StableId(
+            $"{tenantId}|{CandidateContextKey(seed)}", 32);
+        var existing = await _store.GetThreatCampaignV2SummaryAsync(
+            tenantId, campaignId, cancellationToken);
+        if (existing is null || existing.RelatedIncidentCount > 0 ||
+            (!string.Equals(existing.Status, "Open", StringComparison.OrdinalIgnoreCase) &&
+             !string.Equals(existing.Status, "Investigating", StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        existing.Status = "Candidate";
+        existing.Severity = "Informational";
+        existing.Confidence = Math.Min(existing.Confidence ?? .5, .79);
+        existing.Title = "Repeated contact candidate";
+        existing.Summary = "Repeated telemetry lacks a stable source or destination identity; retained as an inferred candidate and excluded from active threats until corroborated.";
+        existing.UpdatedAtUtc = updatedAtUtc;
+        await _store.UpsertThreatCampaignV2SummaryAsync(existing, cancellationToken);
+    }
+
+    private static bool HasStableEndpointContext(ThreatObservation item)
+    {
+        if (!HasStableNode(item.SourceNodeId) || !HasStableNode(item.DestinationNodeId))
+            return false;
+
+        // A node id alone is not evidence: require at least one concrete
+        // identity on each side so a generated fallback id cannot become the
+        // key for a recurrence campaign.
+        return HasConcreteIdentity(item.SourceIp, item.SourceHost, item.SourceAgentId) &&
+               HasConcreteIdentity(item.DestinationIp, item.DestinationHost, item.DestinationAgentId);
+
+        static bool HasStableNode(string? nodeId) =>
+            !string.IsNullOrWhiteSpace(nodeId) &&
+            !nodeId.StartsWith("unknown-", StringComparison.OrdinalIgnoreCase);
+
+        static bool HasConcreteIdentity(params string?[] values) =>
+            values.Any(value => !string.IsNullOrWhiteSpace(value));
+    }
 
     private static HashSet<string> CandidateEndpointIdentities(ThreatObservation item)
     {

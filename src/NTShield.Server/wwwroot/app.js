@@ -971,7 +971,7 @@ async function loadLegacyDashboardSummary(tenantId, signal) {
   const incidentCount = Number(pick(value(2), "total"));
   const threats = asArray(value(3));
   const openIncidents = incidents.filter(item => !["closed", "resolved", "contained"].includes(String(pick(item, "status") || "open").toLowerCase()));
-  const openThreats = threats.filter(item => !isThreatClosed(item));
+  const openThreats = threats.filter(isThreatActive);
   const severities = severityCounts(openIncidents);
   const online = agents.filter(isAgentOnline).length;
   const latestIncident = openIncidents.reduce((latest, item) => Math.max(latest, incidentDate(item).getTime()), 0);
@@ -1997,7 +1997,7 @@ function renderThreatCampaigns() {
   renderThreatContacts(selected);
   renderThreatAi(selected);
   $("#threatRailSummary").textContent = `${number(campaigns.length)} visible • ${number(state.threats.length)} total`;
-  $("#threatActiveCount").replaceChildren(element("i"), document.createTextNode(` ${number(campaigns.filter(item => !isThreatClosed(item)).length)} active`));
+  $("#threatActiveCount").replaceChildren(element("i"), document.createTextNode(` ${number(campaigns.filter(isThreatActive).length)} active`));
 }
 
 function threatCampaignsForView() {
@@ -2068,8 +2068,9 @@ function renderThreatPath(campaign) {
   const mlMeta = ml ? ` · ML ${Math.round(ml.score * 100)}% · confidence ${Math.round(ml.confidence * 100)}%` : "";
   meta.textContent = `${formatDate(pick(campaign, "firstSeenUtc"))} → ${formatDate(pick(campaign, "lastSeenUtc"))} · ${number(stats.hopCount)} hops · ${number(stats.hostCount)} hosts · ${number(stats.ipCount)} IPs · ${stats.duration}${mlMeta}`;
   const closed = isThreatClosed(campaign);
-  status.textContent = closed ? "Closed" : "Active";
-  status.className = `threat-status-chip ${closed ? "closed" : threatRiskScore(campaign) >= 70 ? "alert" : ""}`;
+  const candidate = isThreatCandidate(campaign);
+  status.textContent = candidate ? "Candidate" : closed ? "Closed" : "Active";
+  status.className = `threat-status-chip ${candidate ? "candidate" : closed ? "closed" : threatRiskScore(campaign) >= 70 ? "alert" : ""}`;
   $("#threatEvidenceSummary").replaceChildren(element("i", "graph-legend-dot evidence"), document.createTextNode(` Evidence ${number(stats.evidenceCount)}`));
 
   const nodeHost = $("#threatGraphNodes");
@@ -2110,8 +2111,9 @@ function renderThreatGraphV2(campaign, graph) {
   title.textContent = pick(campaign, "title") || "Threat campaign";
   meta.textContent = `${formatDate(pick(campaign, "firstObservedAtUtc", "firstSeenUtc"))} → ${formatDate(pick(campaign, "lastObservedAtUtc", "lastSeenUtc"))} · ${number(pick(campaign, "observationCount"))} observations · ${number(pick(campaign, "episodeCount"))} episodes · ${number(pick(campaign, "recurrenceCount"))} recurrences`;
   const closed = isThreatClosed(campaign);
-  status.textContent = closed ? "Closed" : "Active";
-  status.className = `threat-status-chip ${closed ? "closed" : threatRiskScore(campaign) >= 70 ? "alert" : ""}`;
+  const candidate = isThreatCandidate(campaign);
+  status.textContent = candidate ? "Candidate" : closed ? "Closed" : "Active";
+  status.className = `threat-status-chip ${candidate ? "candidate" : closed ? "closed" : threatRiskScore(campaign) >= 70 ? "alert" : ""}`;
   const evidenceCount = edges.reduce((sum, edge) => {
     const explicit = Number(pick(edge, "evidenceCount"));
     return sum + (Number.isFinite(explicit) ? explicit : asArray(pick(edge, "evidenceRefs")).length);
@@ -3152,6 +3154,15 @@ function campaignMlInfo(campaign) {
 function isThreatClosed(campaign) {
   const status = String(pick(campaign, "status") || "").toLowerCase();
   return status === "closed" || status === "resolved" || status === "contained";
+}
+
+function isThreatCandidate(campaign) {
+  const status = String(pick(campaign, "status") || "").toLowerCase();
+  return status === "candidate" || status === "inferred";
+}
+
+function isThreatActive(campaign) {
+  return !isThreatClosed(campaign) && !isThreatCandidate(campaign);
 }
 
 function threatObservedDate(campaign) {

@@ -475,6 +475,46 @@ public sealed class TemporalAttackChainV2Tests
     }
 
     [Fact]
+    public async Task Unknown_Endpoint_Security_Events_Stay_Staged_And_Do_Not_Create_Threat_Campaign()
+    {
+        await using var fixture = await TemporalStoreFixture.CreateAsync();
+        var service = new TemporalAttackChainService(
+            fixture.Store, NullLogger<TemporalAttackChainService>.Instance);
+        var start = DateTimeOffset.UtcNow.AddMinutes(-10);
+
+        for (var index = 0; index < 6; index++)
+        {
+            await service.RecordAsync(new AgentIngestBatch
+            {
+                AgentId = "agent-a",
+                ComputerName = "host-a",
+                SentAtUtc = start.AddMinutes(index),
+                SecurityEvents =
+                [
+                    new SecurityEventRecord
+                    {
+                        AgentId = "agent-a",
+                        ComputerName = "host-a",
+                        EventId = 4625,
+                        Channel = "Security",
+                        EventRecordId = index + 1,
+                        TimestampUtc = start.AddMinutes(index),
+                        ProcessId = 4
+                    }
+                ]
+            }, [], [], "tenant-a", CancellationToken.None);
+        }
+
+        Assert.Empty(await fixture.Store.ListThreatCampaignV2SummariesAsync(
+            "tenant-a", DateTimeOffset.UtcNow.AddMinutes(1), null, null, null, null,
+            null, null, 10));
+        var staged = await fixture.Store.ListThreatCandidateObservationsAsync(
+            "tenant-a", string.Empty, start.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(1), 20);
+        Assert.Equal(6, staged.Count);
+        Assert.All(staged, item => Assert.StartsWith("unknown-", item.SourceNodeId));
+    }
+
+    [Fact]
     public async Task Late_Contact_Recomputes_Chronological_Gaps()
     {
         await using var fixture = await TemporalStoreFixture.CreateAsync();

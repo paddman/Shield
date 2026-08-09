@@ -143,7 +143,9 @@ public static class TemporalThreatEndpoints
             var tenantId = TopologyService.ResolveTenantId(http);
             var summary = await store.GetThreatCampaignV2SummaryAsync(
                 tenantId, campaignId, http.RequestAborted);
-            return summary is null ? Results.NotFound() : Results.Ok(summary);
+            if (summary is null) return Results.NotFound();
+            NormalizeSummaryForWire(summary);
+            return Results.Ok(summary);
         }).WithName("GetTemporalThreatCampaign");
 
         group.MapGet("/{campaignId}/graph", async (
@@ -165,6 +167,14 @@ public static class TemporalThreatEndpoints
             var contacts = (await store.ListThreatContactsAsync(
                 tenantId, campaignId, watermark, fromUtc, toUtc,
                 null, null, pageSize + 1, http.RequestAborted)).ToList();
+            if (IsInferredSummary(summary))
+            {
+                foreach (var contact in contacts)
+                {
+                    contact.Inferred = true;
+                    contact.Confidence = Math.Min(contact.Confidence, .79);
+                }
+            }
             var truncated = contacts.Count > pageSize;
             if (truncated) contacts.RemoveAt(contacts.Count - 1);
             var totalEdges = await store.CountThreatContactsAsync(
@@ -255,6 +265,14 @@ public static class TemporalThreatEndpoints
                 position?.Id,
                 pageSize + 1,
                 http.RequestAborted)).ToList();
+            if (IsInferredSummary(summary))
+            {
+                foreach (var row in rows)
+                {
+                    row.Inferred = true;
+                    row.Confidence = Math.Min(row.Confidence, .79);
+                }
+            }
             var hasMore = rows.Count > pageSize;
             if (hasMore) rows.RemoveAt(rows.Count - 1);
             var nextCursor = hasMore && rows.Count > 0
@@ -319,6 +337,14 @@ public static class TemporalThreatEndpoints
                 position?.Id,
                 pageSize + 1,
                 http.RequestAborted)).ToList();
+            if (IsInferredSummary(summary))
+            {
+                foreach (var row in rows)
+                {
+                    row.Inferred = true;
+                    row.Confidence = Math.Min(row.Confidence, .79);
+                }
+            }
             var hasMore = rows.Count > pageSize;
             if (hasMore) rows.RemoveAt(rows.Count - 1);
             var total = await store.CountThreatContactsAsync(
@@ -350,11 +376,22 @@ public static class TemporalThreatEndpoints
 
     private static void BoundCampaignListItem(ThreatCampaignV2Summary summary)
     {
+        NormalizeSummaryForWire(summary);
         summary.Title = BoundText(summary.Title, 160);
         summary.Summary = BoundText(summary.Summary, 240);
         summary.InvolvedHosts = BoundSamples(summary.InvolvedHosts, 2, 96);
         summary.InvolvedIps = BoundSamples(summary.InvolvedIps, 2, 64);
         summary.RelatedIncidentIds = BoundSamples(summary.RelatedIncidentIds, 2, 96);
+    }
+
+    private static bool IsInferredSummary(ThreatCampaignV2Summary summary) =>
+        string.Equals(summary.Status, "candidate", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(summary.Status, "inferred", StringComparison.OrdinalIgnoreCase);
+
+    private static void NormalizeSummaryForWire(ThreatCampaignV2Summary summary)
+    {
+        if (IsInferredSummary(summary))
+            summary.Confidence = Math.Min(summary.Confidence ?? .5, .79);
     }
 
     private static List<string> BoundSamples(IEnumerable<string>? values, int take, int maxLength) =>
