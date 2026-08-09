@@ -70,13 +70,14 @@ public sealed class ResponseActionRequest
     public string? AlertId { get; set; }
 
     /// <summary>
-    /// True only when the caller requested approval and the complete Central
-    /// signature envelope is currently valid. Assigning true by itself is not
-    /// sufficient and deliberately fails closed.
+    /// Central-side reads perform pure signature validation. Once an agent pins
+    /// its AgentId and replay ledger, the first successful read atomically
+    /// reserves the nonce; a new request carrying the same nonce is rejected.
+    /// Assigning true by itself never creates approval.
     /// </summary>
     public bool Approved
     {
-        get => _approvalRequested && ActionApprovalCrypto.IsApprovalValid(this);
+        get => _approvalRequested && ActionApprovalCrypto.ValidateAndReserve(this);
         set => _approvalRequested = value;
     }
 
