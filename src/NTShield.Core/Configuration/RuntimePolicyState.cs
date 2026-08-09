@@ -90,9 +90,11 @@ public sealed class RuntimePolicyState
 
     public void SeedFromLocal(AgentOptions agent, ResponseOptions response)
     {
-        // AgentIdentity is initialized before this method. Bind all signed
-        // response approvals to this exact endpoint identity.
+        // AgentIdentity is initialized and DataDirectory is created before this
+        // method. Bind and persist signed-action replay state per endpoint.
         ActionApprovalCrypto.ConfigureExpectedAgentId(agent.AgentId);
+        ActionApprovalCrypto.ConfigureReplayLedger(
+            Path.Combine(agent.DataDirectory, "action-replay.log"));
 
         lock (_gate)
         {
