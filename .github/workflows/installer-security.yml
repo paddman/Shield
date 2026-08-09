@@ -1,0 +1,98 @@
+name: Installer and provisioning security
+
+on:
+  push:
+    paths:
+      - "installer/**"
+      - "src/NTShield.Agent.Linux/appsettings.json"
+      - "src/NTShield.Server/appsettings.json"
+      - ".github/workflows/installer-security.yml"
+  pull_request:
+    paths:
+      - "installer/**"
+      - "src/NTShield.Agent.Linux/appsettings.json"
+      - "src/NTShield.Server/appsettings.json"
+      - ".github/workflows/installer-security.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  powershell-and-inno:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse every PowerShell installer script
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem installer -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "Parser errors in $($_.FullName)" -ForegroundColor Red
+              $errors | ForEach-Object { Write-Host $_.Message -ForegroundColor Red }
+            }
+          }
+          if ($failed) { throw "PowerShell parser validation failed" }
+
+      - name: Validate secure configuration defaults
+        shell: pwsh
+        run: |
+          $central = Get-Content src/NTShield.Server/appsettings.json -Raw | ConvertFrom-Json
+          $linux = Get-Content src/NTShield.Agent.Linux/appsettings.json -Raw | ConvertFrom-Json
+          if ($central.Security.RequireAuth -ne $true) { throw "Central RequireAuth must default true" }
+          if ($central.Security.AllowLegacyAnonymousAgentIngest -ne $false) { throw "Anonymous ingest must default false" }
+          if ($central.LLMGateway.SkipTlsVerify -ne $false) { throw "LLM TLS verification must default on" }
+          if ($linux.Server.AllowUntrustedServerCertificate -ne $false) { throw "Linux Agent TLS verification must default on" }
+          if ($linux.Linux.AutoRemediate -ne $false) { throw "Linux local auto-remediation must default off" }
+
+          $connectionScript = Get-Content installer/setup-helpers/write-connection-info.ps1 -Raw
+          if ($connectionScript -match 'EnrollmentToken\s*=\s*\$EnrollmentToken' -or
+              $connectionScript -match 'OperatorApiKey\s*=\s*\$OperatorApiKey') {
+            throw "connection.json must not persist enrollment or operator credentials"
+          }
+
+      - name: Install Inno Setup compiler
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Create compile-only artifact placeholders
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/server-win-x64 | Out-Null
+          New-Item -ItemType Directory -Force artifacts/agent-win-x64 | Out-Null
+          New-Item -ItemType Directory -Force artifacts/dashboard-win-x64 | Out-Null
+          Set-Content artifacts/server-win-x64/NTShield.Server.exe "compile-only-placeholder"
+          Set-Content artifacts/agent-win-x64/NTShield.Agent.exe "compile-only-placeholder"
+          Set-Content artifacts/agent-win-x64/NTShield.Agent.Tray.exe "compile-only-placeholder"
+          Set-Content artifacts/dashboard-win-x64/NTShield.Dashboard.exe "compile-only-placeholder"
+
+      - name: Compile Full Central and Agent installer definitions
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          & $iscc /Qp /DSourceRoot="$pwd" /DMyAppVersion="1.3.1" installer/NTShield.iss
+          if ($LASTEXITCODE -ne 0) { throw "Full installer definition failed" }
+          & $iscc /Qp /DSourceRoot="$pwd" /DMyAppVersion="1.3.1" installer/NTShield-Central.iss
+          if ($LASTEXITCODE -ne 0) { throw "Central installer definition failed" }
+          & $iscc /Qp /DSourceRoot="$pwd" /DMyAppVersion="1.3.1" installer/NTShield-Agent.iss
+          if ($LASTEXITCODE -ne 0) { throw "Agent installer definition failed" }
+
+  bash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Linux shell installers
+        run: |
+          set -euo pipefail
+          find installer/linux -maxdepth 1 -type f -name '*.sh' -print0 |
+            xargs -0 -n1 bash -n
