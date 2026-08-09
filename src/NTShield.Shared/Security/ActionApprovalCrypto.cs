@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using NTShield.Shared.Models;
@@ -13,11 +14,14 @@ public static class ActionApprovalCrypto
 {
     private static readonly object Gate = new();
     private static readonly JsonSerializerOptions CanonicalJson = new(JsonSerializerDefaults.Web);
+    private static readonly ConditionalWeakTable<ResponseActionRequest, object> ReservedRequests = new();
+    private static readonly Dictionary<string, DateTimeOffset> ConsumedNonces = new(StringComparer.Ordinal);
 
     private static string? _signingPrivateKeyPem;
     private static string? _trustedPublicKeyPem;
     private static string? _trustedKeyId;
     private static string? _expectedAgentId;
+    private static string? _replayLedgerPath;
 
     public static string? TrustedPublicKeyPem
     {
@@ -63,6 +67,53 @@ public static class ActionApprovalCrypto
             _expectedAgentId = string.IsNullOrWhiteSpace(agentId)
                 ? null
                 : agentId.Trim();
+        }
+    }
+
+    /// <summary>
+    /// Configure the durable nonce ledger used by an agent. The ledger contains
+    /// only random action nonces and expiry timestamps, never credentials or
+    /// action payloads. Passing null clears in-memory replay state for tests or
+    /// Central-side signing.
+    /// </summary>
+    public static void ConfigureReplayLedger(string? path)
+    {
+        lock (Gate)
+        {
+            _replayLedgerPath = string.IsNullOrWhiteSpace(path)
+                ? null
+                : Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+            ConsumedNonces.Clear();
+
+            if (_replayLedgerPath is null || !File.Exists(_replayLedgerPath))
+                return;
+
+            var now = DateTimeOffset.UtcNow;
+            try
+            {
+                foreach (var line in File.ReadLines(_replayLedgerPath).TakeLast(20_000))
+                {
+                    var parts = line.Split('|', 2, StringSplitOptions.TrimEntries);
+                    if (parts.Length != 2 ||
+                        string.IsNullOrWhiteSpace(parts[0]) ||
+                        !long.TryParse(parts[1], out var expiresUnix))
+                    {
+                        continue;
+                    }
+
+                    var expires = DateTimeOffset.FromUnixTimeSeconds(expiresUnix);
+                    if (expires > now.AddMinutes(-5))
+                        ConsumedNonces[parts[0]] = expires;
+                }
+
+                CompactReplayLedgerLocked(now);
+            }
+            catch
+            {
+                // A configured but unreadable ledger must fail closed later when
+                // an action attempts reservation. Do not silently replace it here.
+                ConsumedNonces.Clear();
+            }
         }
     }
 
@@ -187,17 +238,18 @@ public static class ActionApprovalCrypto
             HashAlgorithmName.SHA256,
             RSASignaturePadding.Pss));
 
-        if (!IsApprovalValid(request, issued))
+        if (!IsApprovalValid(request, issued, enforceExpectedAgentId: false))
             throw new CryptographicException("Central generated an invalid action approval envelope.");
     }
 
     /// <summary>
-    /// Verify target-bound action metadata, expiry, payload hash and RSA-PSS
-    /// signature against the public key pinned by Central policy.
+    /// Pure signature validation. This method does not consume the nonce.
+    /// Agent execution paths should use ValidateAndReserve.
     /// </summary>
     public static bool IsApprovalValid(
         ResponseActionRequest request,
-        DateTimeOffset? nowUtc = null)
+        DateTimeOffset? nowUtc = null,
+        bool enforceExpectedAgentId = true)
     {
         if (request is null || !request.ApprovalRequested)
             return false;
@@ -239,7 +291,8 @@ public static class ActionApprovalCrypto
             expectedAgentId = _expectedAgentId;
         }
 
-        if (!string.IsNullOrWhiteSpace(expectedAgentId) &&
+        if (enforceExpectedAgentId &&
+            !string.IsNullOrWhiteSpace(expectedAgentId) &&
             !string.Equals(expectedAgentId, request.TargetAgentId, StringComparison.OrdinalIgnoreCase))
         {
             return false;
@@ -289,6 +342,56 @@ public static class ActionApprovalCrypto
     }
 
     /// <summary>
+    /// Validate and reserve an action nonce exactly once for the configured local
+    /// agent. Re-reading Approved on the same in-memory request remains valid, but
+    /// a new request carrying the same nonce is rejected, including after restart
+    /// when a replay ledger is configured.
+    /// </summary>
+    public static bool ValidateAndReserve(
+        ResponseActionRequest request,
+        DateTimeOffset? nowUtc = null)
+    {
+        if (request is null)
+            return false;
+
+        string? expectedAgentId;
+        lock (Gate) expectedAgentId = _expectedAgentId;
+
+        // Central signs and serializes actions without a local endpoint binding;
+        // nonce consumption belongs only to an agent process.
+        if (string.IsNullOrWhiteSpace(expectedAgentId))
+            return IsApprovalValid(request, nowUtc, enforceExpectedAgentId: false);
+
+        if (ReservedRequests.TryGetValue(request, out _))
+            return IsApprovalValid(request, nowUtc, enforceExpectedAgentId: true);
+
+        var now = nowUtc ?? DateTimeOffset.UtcNow;
+        if (!IsApprovalValid(request, now, enforceExpectedAgentId: true) ||
+            string.IsNullOrWhiteSpace(request.Nonce) ||
+            request.ExpiresAtUtc is null)
+        {
+            return false;
+        }
+
+        lock (Gate)
+        {
+            if (ReservedRequests.TryGetValue(request, out _))
+                return IsApprovalValid(request, now, enforceExpectedAgentId: true);
+
+            PurgeExpiredNoncesLocked(now);
+            if (ConsumedNonces.ContainsKey(request.Nonce))
+                return false;
+
+            if (!PersistNonceLocked(request.Nonce, request.ExpiresAtUtc.Value))
+                return false;
+
+            ConsumedNonces[request.Nonce] = request.ExpiresAtUtc.Value;
+            ReservedRequests.GetValue(request, static _ => new object());
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Stable payload digest. Signature and digest fields are intentionally
     /// excluded; every field capable of changing the executed action is included.
     /// </summary>
@@ -327,6 +430,76 @@ public static class ActionApprovalCrypto
         };
         var bytes = JsonSerializer.SerializeToUtf8Bytes(canonical, CanonicalJson);
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    private static bool PersistNonceLocked(string nonce, DateTimeOffset expiresUtc)
+    {
+        if (_replayLedgerPath is null)
+            return true;
+
+        try
+        {
+            var directory = Path.GetDirectoryName(_replayLedgerPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            File.AppendAllText(
+                _replayLedgerPath,
+                $"{nonce}|{expiresUtc.ToUnixTimeSeconds()}{Environment.NewLine}");
+            HardenReplayLedger(_replayLedgerPath);
+
+            var info = new FileInfo(_replayLedgerPath);
+            if (ConsumedNonces.Count > 10_000 || info.Length > 1024 * 1024)
+                CompactReplayLedgerLocked(DateTimeOffset.UtcNow);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void PurgeExpiredNoncesLocked(DateTimeOffset now)
+    {
+        foreach (var nonce in ConsumedNonces
+                     .Where(pair => pair.Value <= now.AddMinutes(-5))
+                     .Select(pair => pair.Key)
+                     .ToList())
+        {
+            ConsumedNonces.Remove(nonce);
+        }
+    }
+
+    private static void CompactReplayLedgerLocked(DateTimeOffset now)
+    {
+        if (_replayLedgerPath is null)
+            return;
+
+        PurgeExpiredNoncesLocked(now);
+        var directory = Path.GetDirectoryName(_replayLedgerPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        var temporary = _replayLedgerPath + ".tmp";
+        File.WriteAllLines(
+            temporary,
+            ConsumedNonces.Select(pair => $"{pair.Key}|{pair.Value.ToUnixTimeSeconds()}"));
+        File.Move(temporary, _replayLedgerPath, overwrite: true);
+        HardenReplayLedger(_replayLedgerPath);
+    }
+
+    private static void HardenReplayLedger(string path)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        catch
+        {
+            // Parent installer/systemd UMask also protects the file.
+        }
     }
 
     private static bool FixedTimeHexEquals(string left, string right)
