@@ -2,160 +2,274 @@
 
 ![NT Shield — Unified AI Cyber Defense as a Service](assets/branding/ntshield-platform-hero.png)
 
-## Unified AI Cyber Defense as a Service
+## Credential Attack & Lateral Movement Defense for Windows and Linux Servers
 
-**NT Shield** is an AI-assisted cyber defense platform that brings endpoint telemetry, infrastructure logs, cross-host correlation, AI triage, operator approval, response workflows, and a unified Control Center into one service-oriented security platform.
+[![Version](https://img.shields.io/badge/version-1.3.1-171C26)](Directory.Build.props)
+[![Default mode](https://img.shields.io/badge/default-IDS%20%2F%20Detect--Only-FFC400)](docs/ids-ips-mode.md)
+[![Control plane](https://img.shields.io/badge/control%20plane-authenticated-16A36A)](docs/security-auth-policy.md)
 
-The current direction is no longer just “an endpoint agent with a dashboard.” NT Shield is designed as an **AI Scale-Out Layer for security operations**: collect signals from many systems, reduce alert noise, connect related evidence, explain incidents in analyst-friendly language, rank risk, and help an operator decide what to do next.
+**NT Shield** is a defensive monitoring and response platform built to answer one practical security question:
 
-> **Positioning:** NT Shield is designed to **complement an existing SOC / MDR operation**, not replace experienced security analysts. In an NT service context, the intended model is **NT cyfence SOC + NT Shield AI Scale-Out Layer**, with AI handling high-volume triage and evidence correlation while important response actions remain governed by human approval.
+> **When an attacker obtains or guesses an account, can we detect the chain across multiple servers, preserve the evidence, and contain the correct endpoint without turning the security platform itself into a remote-control vulnerability?**
 
-**Current repository build target:** `1.1.0`
+NT Shield collects endpoint and infrastructure telemetry, detects credential abuse and suspicious execution, correlates evidence across hosts, creates an investigation-ready incident and delivers tightly controlled response actions through an authenticated Central control plane.
 
-Windows Server **2012 → 2025** · Windows 10/11 · modern Linux distributions · CentOS 6 compatibility agent · responsive Web Control Center · native Windows Dashboard · OpenAI-compatible LLM Gateway.
+> **ภาษาไทย:** NT Shield เน้นตรวจจับการเดารหัสผ่าน บัญชีถูกยึด การยกระดับสิทธิ์ และการเคลื่อนย้ายจากเครื่องหนึ่งไปอีกเครื่อง พร้อมเชื่อมหลักฐานว่าเกี่ยวข้องกับผู้ใช้ Process, Service, IP, Port และ Server ใด ก่อนให้ผู้ปฏิบัติงานอนุมัติการตอบสนองที่มีลายเซ็นและระบุเครื่องเป้าหมายชัดเจน
+
+**Current repository version:** `1.3.1`
+
+Windows Server 2012 → 2025 · Windows 10/11 · modern Linux distributions · CentOS 6 compatibility telemetry agent · Web Control Center · native Windows Dashboard · local/OpenAI-compatible AI integration.
 
 ---
 
-## What problem NT Shield solves
+## The security problem
 
-Security teams rarely have a shortage of logs. They have a shortage of time.
+A real intrusion rarely appears as one perfect alert. It appears as fragments spread across machines and data sources:
 
-A single organization may already generate security signals from:
+```text
+Many failed logons
+        ↓
+One successful logon
+        ↓
+Special privileges assigned
+        ↓
+PowerShell / service / scheduled task execution
+        ↓
+SMB, RDP or WinRM connection to another server
+        ↓
+A second host becomes involved
+```
 
-- Website / WAF
-- API gateways
-- Windows and Linux servers
-- Endpoint processes and services
-- Firewall / router / network devices
-- Authentication and identity systems
-- Cloud and application workloads
+Without correlation, each step becomes a different row in a different console. An analyst must manually reconstruct the attack while the attacker continues moving.
 
-Those signals normally arrive in different places, with different formats and different levels of context. NT Shield is designed to turn them into a smaller number of **investigable incidents** instead of forcing an analyst to manually connect hundreds or thousands of alerts.
-
-### Core workflow
+NT Shield is designed to connect those fragments into one investigation:
 
 ```mermaid
 flowchart LR
-  A[Endpoints / WAF / Syslog / Apps] --> B[NT Shield Central]
-  B --> C[Rules + Behavioral Detection]
-  C --> D[Cross-host Correlation]
-  D --> E[AI Triage / Evidence Linking]
-  E --> F[Risk Ranking + Incident Summary]
-  F --> G{Human Approval}
-  G -->|Approve| H[Contain / Block / Isolate / Stop Service]
-  G -->|Investigate| I[Analyst Workflow]
-  H --> J[Audit Trail / Reporting]
-  I --> J
+  A[4625 failures] --> B[4624 success]
+  B --> C[4672 privileged logon]
+  C --> D[4688 process / PowerShell]
+  D --> E[4697/7045 service or 4698 task]
+  E --> F[SMB / RDP / WinRM fan-out]
+  F --> G[Cross-host incident]
+  G --> H[Analyst review]
+  H --> I[Signed response to one Agent]
 ```
 
-The safe default remains **IDS / detect-only**. Automated containment is optional. Remote response is operator-controlled.
+The intended outcome is not “more alerts.” It is a smaller number of incidents that explain:
+
+- which account and source IP were involved;
+- which server accepted the logon;
+- whether the logon became privileged;
+- which process, executable hash or Windows service is related;
+- where the process connected next;
+- which evidence supports containment;
+- which exact Agent may execute the approved response.
 
 ---
 
-## NT Shield in one sentence
+## What version 1.3.1 does
 
-> **NT Shield = unified telemetry + cross-host detection + AI triage + human-approved response + service-ready security operations.**
+### Detection and evidence
 
-For an NT-oriented deployment model:
-
-> **NT Shield = NT cyfence SOC + AI Scale-Out + Thai incident context + sovereign/local AI capability.**
-
----
-
-## Platform capabilities
-
-| Capability | What NT Shield does |
+| Security area | Current capability |
 |---|---|
-| **Endpoint telemetry** | Collects Windows/Linux security, process, service, network and system signals |
-| **WAF / Syslog intake** | Brings infrastructure and application security events into the same control plane |
-| **Cross-host correlation** | Links activity across endpoints into incidents and lateral-movement campaigns |
-| **Behavior + rules** | Combines deterministic detection rules with behavioral context |
-| **AI Analyst / Brain** | Uses Qwen-compatible or OpenAI-compatible inference endpoints for investigation assistance |
-| **AI Triage** | Summarizes noisy evidence, links related observations and helps rank incident risk |
-| **Human Approval** | Keeps important response actions under operator control |
-| **Response workflow** | Supports approved actions such as blocking, isolation and service/process response where enabled |
-| **Control Center** | Responsive Web UI plus native Windows dashboard for monitoring and operations |
-| **LLM Gateway** | Central-issued expiring tokens and a constrained OpenAI-compatible proxy |
-| **Offline resilience** | Local SQLite WAL queue with retry/backoff before telemetry reaches Central |
-| **Audit-oriented design** | Centralizes actions and decisions so investigation/response history can be tracked |
+| **Credential attacks** | Password spray, distributed spray, brute force, failures followed by success and privileged-logon patterns |
+| **Lateral movement** | Authentication-port fan-out, explicit credential use, RDP/network logon bursts and multi-host path tracking |
+| **Execution** | Process creation, suspicious paths, LOLBins and suspicious command-line tokens |
+| **Persistence** | New services, scheduled tasks, account creation and privileged group changes |
+| **Endpoint file protection** | Defender/YARA-assisted scanning, hashes, heuristics, quarantine workflow and ransomware-style file activity sensors |
+| **Infrastructure intake** | Syslog, WAF/web indicators and open-source signature matching |
+| **Evidence context** | Host, user, process, service, IP, port, timestamp, event id, file hash and related incident where available |
+| **Offline operation** | Local SQLite WAL queue with retry/backoff when Central is unavailable |
+
+Detection definitions are visible in [`config/rules.json`](config/rules.json). Coverage and caveats are documented in [`docs/threat-coverage.md`](docs/threat-coverage.md) and [`docs/known-limitations.md`](docs/known-limitations.md).
+
+### Response
+
+The endpoint default is **IDS / Detect-Only**. Detection does not automatically grant response authority.
+
+| Response path | Behavior |
+|---|---|
+| **IDS default** | Record and report; no automatic block, kill or isolation |
+| **Local IPS** | Optional policy-controlled response for configured severity and rules |
+| **Operator response** | Authenticated Central request, one concrete target Agent, signed approval envelope, expiry and one-time nonce |
+
+Supported response types depend on platform and policy. The allowlist includes actions such as IP/port blocking, file scan/quarantine, service/task control, process termination, evidence export and constrained host quarantine. Arbitrary shell commands are not an Agent response API.
 
 ---
 
-## Current architecture
+## The control plane is part of the security product
+
+A monitoring Agent with process, service and firewall authority is itself a high-value target. Version `1.3.1` therefore changes the Central/Agent relationship from permissive lab behavior to **fail-closed defaults**.
+
+### Enforced security boundaries
+
+| Boundary | Enforcement in 1.3.1 |
+|---|---|
+| **Central API authentication** | `Security:RequireAuth=true` by default |
+| **Operator isolation** | Operator APIs require `OperatorApiKey`; Agent keys are rejected outside Agent telemetry paths |
+| **Agent identity** | First enrollment uses `EnrollmentToken`; Central issues a separate per-Agent API key |
+| **Legacy mode** | `RequireAuth=false` never opens Operator APIs; anonymous ingest needs a second explicit lab-only switch |
+| **Trusted transport** | Agents validate the Central certificate through OS trust or an explicit CA file; hostname mismatch is rejected |
+| **Secret storage** | Enrollment, Operator and private action-signing keys stay in protected Central `secrets.json` |
+| **No credentials in discovery metadata** | `connection.json` stores URL/port/CA metadata only |
+| **No destructive broadcast** | Response actions require one concrete `TargetAgentId` |
+| **Cryptographic approval** | Central signs destructive actions with RSA-PSS over a canonical payload hash |
+| **Target binding** | An Agent rejects a validly signed action intended for another Agent |
+| **Expiry** | Destructive actions have a short validity window, five minutes by default |
+| **Replay protection** | Each Agent persists consumed nonces and rejects the same signed envelope after first use, including after restart |
+| **Tamper resistance** | Changing the target, IP, port, process, path, service, reason or other signed field invalidates approval |
+
+The complete design and acceptance checks are in [`docs/security-auth-policy.md`](docs/security-auth-policy.md).
+
+### Signed response flow
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant O as Authenticated Operator
+  participant C as NT Shield Central
+  participant A as Target Agent
+  participant OS as Endpoint OS
+
+  O->>C: Request action + target Agent + reason
+  C->>C: Validate operator, allowlist and target
+  C->>C: Add issue time, expiry and random nonce
+  C->>C: Hash canonical payload and sign with Central private key
+  C-->>A: Deliver signed envelope on authenticated heartbeat
+  A->>A: Verify key id, signature, target, payload and expiry
+  A->>A: Reserve nonce in persistent replay ledger
+  alt valid and first use
+    A->>OS: Execute allowlisted action
+    A->>A: Persist local result and rollback information
+  else invalid, expired, modified or replayed
+    A-->>A: Reject action
+  end
+```
+
+The Central private signing key never leaves Central. Agents receive only the public verification key through versioned policy.
+
+---
+
+## Architecture
 
 ```mermaid
 flowchart TB
-  subgraph SOURCES["Telemetry sources"]
+  subgraph SOURCES["Security telemetry"]
     WIN[Windows Agent]
     LIN[Linux Agent]
-    WAF[WAF / Web / API]
+    LEG[CentOS 6 compatibility Agent]
+    WAF[WAF / Web / API logs]
     SYS[Firewall / Router / Syslog]
   end
 
-  subgraph CENTRAL["NT Shield Central"]
-    ING[Ingest + Enrollment]
-    RULE[Rule / Signature Detection]
-    CORR[Cross-host Correlation]
-    INC[Incident + Campaign Engine]
-    LLM[NT Shield Brain / LLM Gateway]
-    ACT[Human-approved Actions]
-    DB[(SQLite / PostgreSQL)]
+  subgraph CENTRAL["Authenticated NT Shield Central :7443"]
+    AUTH[Enrollment + scoped API keys]
+    ING[Ingest + durable storage]
+    DET[Rule / signature detection]
+    CORR[Cross-host correlation]
+    INC[Incident and campaign tracking]
+    ACT[Signed action service]
+    LLM[AI Analyst / LLM Gateway]
+    DB[(SQLite lab / PostgreSQL / ClickHouse options)]
 
-    ING --> RULE --> CORR --> INC
-    INC --> LLM
-    INC --> ACT
+    AUTH --> ING
+    ING --> DET --> CORR --> INC
     ING --> DB
     INC --> DB
-    ACT --> DB
+    INC --> LLM
+    INC --> ACT
   end
 
-  subgraph OPS["Security operations"]
+  subgraph OPERATIONS["Security operations"]
     WEB[Web Control Center]
     WPF[Windows Dashboard]
     SOC[SOC / Analyst]
   end
 
-  WIN --> ING
-  LIN --> ING
+  WIN -->|HTTPS + Agent key| AUTH
+  LIN -->|HTTPS + Agent key| AUTH
+  LEG -->|HTTPS + Agent key| AUTH
   WAF --> ING
   SYS --> ING
-  WEB --> CENTRAL
-  WPF --> CENTRAL
+  WEB -->|Operator key| CENTRAL
+  WPF -->|Operator key| CENTRAL
   SOC --> WEB
-  ACT -. approved response .-> WIN
-  ACT -. approved response .-> LIN
+  ACT -. signed one-time action .-> WIN
+  ACT -. signed one-time action .-> LIN
 ```
 
-> Agents do not communicate directly with the Dashboard. Agents and operator interfaces communicate through **Central**.
+> Agents never communicate directly with the Dashboard. Agents and operator interfaces communicate through **Central** using different credentials and scopes.
 
 ---
 
-## AI-assisted security operations
+## Cross-host investigation
 
-NT Shield Brain is intended to help analysts answer practical questions quickly:
+NT Shield correlates destination authentication events with source-side network/process evidence when that evidence is available.
 
-- What happened?
-- Which hosts, users, processes, services, IPs and ports are related?
-- Is this one isolated alert or part of a larger campaign?
-- What evidence supports the incident?
-- What is the likely risk and why?
-- What should the analyst investigate next?
-- Which response actions are available?
+```mermaid
+flowchart LR
+  S[Source Agent\nprocess + service + outbound connection]
+  D[Destination Agent\n4625 / 4624 / 4672 events]
+  S --> C[Central correlator]
+  D --> C
+  C --> I[One incident]
+  I --> P[Threat path A → B → C]
+  I --> R[Evidence-grounded response decision]
+```
 
-The AI layer is an **assistant to the detection and response pipeline**, not the sole detection mechanism. Rules, telemetry, correlation and stored evidence remain important because an LLM confidently inventing a firewall incident would be a rather expensive feature.
+Example evidence set:
+
+```text
+Source       : 10.0.105.35 / SERVER-A
+Process      : svchost.exe, PID 1684
+Service      : suspicious-service
+Destination  : 10.0.105.190 / SERVER-B, TCP 445
+Events       : 4625 × 24 → 4624 → 4672
+Next hop     : SERVER-B → SERVER-C over RDP/SMB
+Decision     : block source, stop service or isolate target after review
+```
+
+This is the primary product direction. Generic dashboards and AI summaries are secondary to producing correct, attributable evidence for this chain.
+
+---
+
+## AI has a bounded role
+
+NT Shield Brain and the LLM Gateway can help an analyst:
+
+- summarize an incident in analyst-friendly language;
+- connect referenced evidence;
+- rank risk and explain contributing signals;
+- search defensive playbooks;
+- suggest the next read-only investigation step;
+- draft a response recommendation.
+
+AI does **not** create response authority. The security sequence is:
+
+```text
+Collected evidence
+    → deterministic detection/correlation
+    → risk context
+    → AI explanation/recommendation
+    → operator decision
+    → Central-signed action
+    → Agent verification and one-time execution
+```
+
+The investigation Agent is bounded to allowlisted read-only tools. It has no arbitrary shell, scanner or direct firewall mutation capability. A fluent paragraph from an LLM is not evidence, despite humanity's persistent urge to reward confident formatting.
 
 ### LLM Gateway
 
-Agents and approved AI clients can use Central as their LLM endpoint. Central validates an expiring token, records usage and forwards only allowed inference routes to the configured upstream model service. The upstream API key is never returned to clients.
-
-Example configuration:
+Central can proxy constrained OpenAI-compatible routes without exposing the upstream model key:
 
 ```json
 "LLMGateway": {
   "Enabled": true,
   "BaseUrl": "https://<MODEL-SERVER>/v1",
-  "ApiKey": "<server-side-upstream-key>",
-  "Model": "qwen3.5:9b",
+  "ApiKey": "<server-side-secret>",
+  "Model": "<approved-local-model>",
   "SkipTlsVerify": false,
   "TimeoutSeconds": 120
 }
@@ -165,175 +279,151 @@ Client configuration:
 
 ```env
 OPENAI_BASE_URL=https://<CENTRAL>:7443/api/v1/llm/v1
-OPENAI_API_KEY=ntllm_<issued-token>
+OPENAI_API_KEY=ntllm_<issued-expiring-token>
 ```
 
-Supported proxy routes include `models`, `chat/completions`, `completions`, and `embeddings`.
-
 ---
 
-## Detection focus
+## Install and provision securely
 
-NT Shield currently focuses on evidence-rich host and network behavior such as:
+The repository does not claim that one prebuilt binary has been validated on every listed OS. Build `1.3.1`, test it on the target golden image and retain a rollback package.
 
-- Password spray and brute-force activity
-- Suspicious successful logon after repeated failures
-- Lateral movement and multi-host paths
-- RDP / authentication-port fan-out
-- Explicit credential use
-- Privileged logon patterns
-- Suspicious processes and command lines
-- New Windows services and scheduled tasks
-- Account / privilege changes
-- WAF and syslog indicators
-- Abnormal network activity
-- Process/service attribution to network connections
+### Package names
 
-The important part is not just producing an alert. NT Shield attempts to preserve the **host + user + process + service + IP + port + time + related incident** context an analyst needs for investigation.
-
-See [`config/rules.json`](config/rules.json) and [`docs/threat-coverage.md`](docs/threat-coverage.md).
-
----
-
-## Multi-host correlation
-
-```mermaid
-flowchart LR
-  A[Source endpoint] -->|connection + process context| C[NT Shield Central]
-  B[Destination endpoint] -->|logon / security events| C
-  C --> D[Cross-host correlation]
-  D --> E[Incident hops]
-  E --> F[Threat campaign A → B → C]
-  F --> G[AI summary + analyst review]
-```
-
-This is one of the core differentiators of the platform: a connection on one host and an authentication event on another can become part of the **same investigation**, rather than two unrelated rows in two unrelated dashboards.
-
----
-
-## Human-approved response
-
-NT Shield intentionally separates **detection** from **response authority**.
-
-| Mode | Behavior |
+| Package | Purpose |
 |---|---|
-| **IDS / Detect-only** | Detect, record and report. No automatic containment |
-| **IPS** | Optional policy-controlled automatic response for configured severity/rules |
-| **Operator response** | Action is requested centrally and delivered to the endpoint after approval |
+| `NTShield-Setup-1.3.1.exe` | Full Windows stack: Central + Agent + Dashboard |
+| `NTShield-Central-Setup-1.3.1.exe` | Authenticated Central + Web Control Center |
+| `NTShield-Agent-Setup-1.3.1.exe` | Windows Agent + Tray |
+| `NTShield-Linux-Agent-1.3.1-linux-x64.tar.gz` | Linux Agent + systemd installer |
 
-Possible response actions depend on platform and policy, and may include blocking an IP, isolation, stopping a service or terminating a process.
-
----
-
-## Service / AIaaS direction
-
-NT Shield is being developed as a **service platform**, not only as software installed once and forgotten in a server rack until the person who installed it resigns.
-
-The service model is designed around:
-
-1. **Cloud/API delivery** — telemetry is sent to Central and insights are delivered through the Control Center/API.
-2. **AI infrastructure abstraction** — customers use the service without managing the underlying LLM infrastructure.
-3. **Tenant-oriented operations** — architecture is moving toward isolated customer/tenant investigation and centralized administration.
-4. **Subscription + usage-based business model** — suitable for recurring managed-security services.
-5. **Human governance** — AI can recommend and prioritize, while sensitive response actions remain approval-controlled.
-6. **PDPA-aware data handling direction** — minimize unnecessary personal data exposure and support anonymization/redaction workflows in managed deployments.
-7. **Scale-out operations** — use AI to reduce repetitive analyst triage so security operations can support more systems without linearly adding people.
-
-Some service-layer capabilities are product direction and may evolve independently from the current `1.1.0` repository build. See the roadmap and documentation before treating a planned capability as production-ready.
-
----
-
-## Control Center preview
-
-![NT Shield Control Center dashboard](docs/screenshots/control-center-dashboard.png)
-
-The dashboard preview may use synthetic telemetry for visual validation. The shipped Control Center reads Central APIs and should not inject demo telemetry into normal operation.
-
-| Desktop | Mobile |
-|---|---|
-| ![NT Shield desktop login](docs/screenshots/control-center-login-desktop.png) | ![NT Shield mobile login](docs/screenshots/control-center-login-mobile.png) |
-
----
-
-## Build installers
-
-The repository does not claim a universally validated prebuilt release for every supported operating system. Build version **1.1.0** from source and validate packages in the target environment before production deployment.
-
-| File | Platform | Description |
-|---|---|---|
-| **NTShield-Setup-1.1.0.exe** | Windows | Central + Agent + Tray + native Dashboard + Web Control Center |
-| **NTShield-Agent-Setup-1.1.0.exe** | Windows | Agent + Tray |
-| **NTShield-Central-Setup-1.1.0.exe** | Windows | Central API + responsive Web Control Center |
-| **NTShield-Linux-Agent-1.1.0-linux-x64.tar.gz** | Linux x64 | Linux agent package |
-
-### Quick install
-
-| Scenario | Steps |
-|---|---|
-| **One Windows server / lab** | Full Setup as Administrator → Full stack → `https://localhost:7443` |
-| **Additional Windows endpoint** | Agent Setup → configure Central IP + port `7443` |
-| **Linux host** | Install Linux package and point it to Central |
-| **Silent Windows agent** | `NTShield-Agent-Setup-1.1.0.exe /VERYSILENT /ServerHost=10.0.0.5 /Port=7443` |
-
-```bash
-tar -xzf NTShield-Linux-Agent-1.1.0-linux-x64.tar.gz
-cd NTShield-Linux-Agent-1.1.0-linux-x64
-sudo ./install-agent.sh --host <CENTRAL_IP> --port 7443
-```
-
-Remote endpoints must use the Central server address, **not `localhost`**.
-
----
-
-## Build from source
+### Build
 
 ```powershell
 dotnet restore
 dotnet build NTShield.sln -c Release
 dotnet test NTShield.sln -c Release
 
-# Windows packages
-.\installer\build-setup.ps1 -Version 1.1.0
-.\installer\build-setup-agent.ps1 -Version 1.1.0
-.\installer\build-setup-central.ps1 -Version 1.1.0
-
-# Linux package
-.\installer\build-agent-linux.ps1 -Version 1.1.0
+.\installer\build-setup.ps1 -Version 1.3.1
+.\installer\build-setup-central.ps1 -Version 1.3.1
+.\installer\build-setup-agent.ps1 -Version 1.3.1
+.\installer\build-agent-linux.ps1 -Version 1.3.1
 ```
 
+### One-machine Windows lab
+
+1. Run `NTShield-Setup-1.3.1.exe` as Administrator and select **Full stack**.
+2. Central starts first, creates protected secrets and generates/exports its HTTPS certificate.
+3. The bundled Agent trusts the local Central certificate, enrolls and receives its per-Agent key.
+4. Read credentials as Administrator from:
+
+```text
+C:\ProgramData\NTShield\Server\secrets.json
+```
+
+5. Open:
+
+```text
+https://localhost:7443/
+```
+
+### Remote Windows Agent
+
+Copy the public Central certificate to the endpoint, then install with the enrollment token. Do not copy `secrets.json` or the private PFX/signing key.
+
+```powershell
+NTShield-Agent-Setup-1.3.1.exe /VERYSILENT `
+  /CentralUrl=https://shield.example.go.th:7443 `
+  /EnrollmentToken=<ENROLLMENT_TOKEN> `
+  /CaCertificatePath=C:\Secure\central.cer
+```
+
+For a publicly trusted certificate, `CaCertificatePath` may be omitted. The Central URL hostname must match the certificate SAN.
+
+### Linux Agent
+
+```bash
+tar -xzf NTShield-Linux-Agent-1.3.1-linux-x64.tar.gz
+cd NTShield-Linux-Agent-1.3.1-linux-x64
+
+sudo ./install-agent.sh \
+  --url https://shield.example.go.th:7443 \
+  --ca-cert ./central-ca.crt \
+  --enrollment-token '<ENROLLMENT_TOKEN>'
+
+systemctl status ntshield-agent
+journalctl -u ntshield-agent -f
+```
+
+The installer stores Linux Agent configuration with mode `0600` and enables a restricted systemd sandbox. `--allow-untrusted` exists only for an isolated migration lab.
+
+### CentOS 6 compatibility Agent
+
+The Go compatibility Agent supports metrics/log/WAF parsing, local spool and authenticated HTTPS transport suitable for legacy telemetry collection. It requires HTTPS/TLS 1.2 and should not be presented as feature-equivalent to the modern Windows/Linux response Agents.
+
 ---
 
-## Technology stack
+## Central API boundary
 
-| Layer | Technology |
+| Method | Path | Principal | Purpose |
+|---|---|---|---|
+| GET | `/api/v1/health` | Public | Health and version only |
+| POST | `/api/v1/agents/register` | Enrollment token | First Agent enrollment |
+| POST | `/api/v1/agents/heartbeat` | Agent | Presence, policy and pending target-bound actions |
+| POST | `/api/v1/ingest` | Agent | Telemetry ingest |
+| POST | `/api/v1/events/batch` | Agent | Security-event batch |
+| POST | `/api/v1/connections/batch` | Agent | Network-connection batch |
+| GET | `/api/v1/agents` | Operator | Fleet inventory |
+| GET | `/api/v1/incidents` | Operator | Incident list |
+| POST | `/api/v1/actions` | Operator | Validate, sign and enqueue response action |
+| GET/PUT | `/api/v1/policy` | Operator | Read/update endpoint policy |
+| GET | `/api/v1/audit` | Operator | Security audit records |
+| GET/POST/DELETE | `/api/v1/llm/tokens` | Operator | LLM token administration |
+| GET/POST | `/api/v1/llm/v1/*` | LLM client token | Constrained model proxy |
+
+Agent credentials are rejected on Operator routes.
+
+---
+
+## Tests that matter
+
+The repository includes unit and integration tests for:
+
+- password-spray and detection rules;
+- lateral-movement correlation;
+- offline queue behavior;
+- endpoint scanning/quarantine;
+- LLM gateway constraints;
+- signed-action validity;
+- payload tampering;
+- expiry;
+- target-Agent mismatch;
+- plain `Approved=true` bypass attempts;
+- nonce replay before and after Agent restart.
+
+Tests demonstrate code behavior; they are not a substitute for attack simulation on a representative network. Production acceptance should measure MTTD, containment latency, false-positive rate, action success and rollback success.
+
+---
+
+## Current production boundary
+
+| Area | Repository status |
 |---|---|
-| Language | C# / **.NET 10** |
-| Windows Agent | `net10.0-windows`, win-x64 self-contained service |
-| Linux Agent | `net10.0`, linux-x64 self-contained, systemd |
-| Local DB | SQLite WAL + offline queue |
-| Central DB | SQLite default · PostgreSQL optional |
-| UI | Responsive Web Control Center + WPF Dashboard + WinForms tray |
-| Transport | HTTPS · optional mTLS · optional syslog UDP |
-| Logging | Serilog rolling files |
-| Installers | Inno Setup (Windows) · bash + tar.gz (Linux) |
+| Authenticated Central and scoped Agent/Operator keys | Implemented |
+| Trusted TLS and optional custom CA | Implemented |
+| Signed, target-bound, expiring response actions | Implemented |
+| Persistent one-time replay protection | Implemented |
+| IDS endpoint collection and rule detection | Implemented |
+| Cross-host correlation and threat paths | Implemented with scenario-dependent evidence |
+| Named users, MFA and RBAC | Not yet implemented |
+| End-to-end Central action result acknowledgement | Not yet complete |
+| Durable state machine for every delayed multi-batch attack chain | Requires further implementation and validation |
+| Database-enforced multi-tenant isolation | Requires PostgreSQL RLS/schema/database design |
+| Kernel-grade ransomware prevention | Not claimed |
+| Code-signed release enforcement | Available as policy hooks; release signing rollout required |
+| Capacity/SLA numbers | Must be measured in the deployment environment |
 
----
-
-## Central API overview
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/v1/health` | Health + version information |
-| POST | `/api/v1/agents/register` | Enroll agent |
-| POST | `/api/v1/agents/heartbeat` | Presence + pending actions |
-| GET | `/api/v1/agents` | Fleet inventory |
-| POST | `/api/v1/ingest` | Telemetry ingest |
-| GET/POST | `/api/v1/incidents` | Incident operations |
-| POST/GET | `/api/v1/actions` | Operator response queue |
-| GET | `/api/v1/threats` | Threat campaigns |
-| GET | `/api/v1/threats/{id}/path` | Campaign hop path |
-| GET | `/api/v1/signatures` | Loaded open-source signatures |
-| UDP | `:5514` | Syslog intake |
+Read [`docs/known-limitations.md`](docs/known-limitations.md) before any production claim or customer commitment.
 
 ---
 
@@ -342,19 +432,21 @@ dotnet test NTShield.sln -c Release
 ```text
 NTShield.sln
 ├── src/
-│   ├── NTShield.Agent
-│   ├── NTShield.Agent.Tray
-│   ├── NTShield.Agent.Linux
-│   ├── NTShield.Server
-│   ├── NTShield.Dashboard
-│   ├── NTShield.Detection
-│   ├── NTShield.Response
+│   ├── NTShield.Agent              # Windows service
+│   ├── NTShield.Agent.Tray         # tray + local status
+│   ├── NTShield.Agent.Linux        # modern Linux Agent
+│   ├── NTShield.Agent.CentOS6      # legacy compatibility Agent
+│   ├── NTShield.Server             # authenticated Central API + Web UI
+│   ├── NTShield.Dashboard          # WPF operator console
+│   ├── NTShield.Detection          # endpoint rules
+│   ├── NTShield.Response           # allowlisted response execution
 │   ├── NTShield.Collectors.Windows
 │   ├── NTShield.Storage
 │   ├── NTShield.Transport
 │   └── NTShield.Shared
-├── installer/
-├── config/
+├── ai-service/                      # bounded investigation / AI analysis service
+├── config/                          # rules, allowlists, protection/signature packs
+├── installer/                       # Windows and Linux packaging
 ├── docs/
 └── tests/
 ```
@@ -363,60 +455,37 @@ NTShield.sln
 
 ## Documentation
 
-| Document | Topic |
+| Document | Purpose |
 |---|---|
-| [Architecture](docs/architecture.md) | Architecture and module flow |
-| [Installation](docs/installation.md) | Deployment guide |
+| [Security authentication and signed actions](docs/security-auth-policy.md) | P0 control-plane boundary and acceptance tests |
+| [Known limitations](docs/known-limitations.md) | Honest production gaps |
+| [Architecture](docs/architecture.md) | Component flow |
+| [Installation](docs/installation.md) | Deployment details |
 | [Detection rules](docs/detection-rules.md) | Rule engine |
-| [Threat coverage](docs/threat-coverage.md) | Detection coverage |
-| [IDS / IPS mode](docs/ids-ips-mode.md) | Detection vs response mode |
-| [Syslog + signatures](docs/syslog-and-signatures.md) | Syslog intake and signatures |
-| [Layered Antivirus](docs/antivirus.md) | Endpoint protection pipeline |
-| [AI Realtime Console](docs/ai-console.md) | Brain/LLM status and evidence-grounded recommendations |
-| [Incident response](docs/incident-response.md) | IR workflow |
-| [Threat model](docs/threat-model.md) | Security assumptions |
-| [Known limitations](docs/known-limitations.md) | Current limitations |
+| [Threat coverage](docs/threat-coverage.md) | Signals and ATT&CK mapping |
+| [IDS / IPS mode](docs/ids-ips-mode.md) | Detection and response authority |
+| [Incident response](docs/incident-response.md) | Response workflow |
+| [Threat model](docs/threat-model.md) | Assumptions and abuse cases |
+| [Layered endpoint protection](docs/antivirus.md) | Defender/YARA/user-mode file pipeline |
+| [AI security design](docs/ntshield-brain-ai.md) | Evidence-grounded and bounded AI workflow |
+| [Implementation readiness](docs/ntshield-readiness.md) | Implemented vs pilot validation |
 | [Windows Server 2012](docs/windows-server-2012.md) | Legacy Windows notes |
 
 ---
 
-## Product roadmap
+## What NT Shield does not claim
 
-High-level direction:
+NT Shield does not claim to be:
 
-- Stronger tenant foundation, roles, audit and policy isolation
-- Broader agent enrollment and asset inventory
-- Richer endpoint/network telemetry
-- Behavioral detection and incident scoring
-- Response policy and quarantine workflows
-- Evidence timeline and process tree
-- Topology / system canvas
-- Reporting and managed-service views
-- More XDR connectors
-- PDPA-aware anonymization / redaction workflows
-- Scale-out AI triage for SOC operations
+- a replacement for experienced SOC analysts;
+- a complete commercial NGAV/EDR engine;
+- a kernel-level ransomware prevention product;
+- proof that every zero-day will be detected;
+- a fully validated multi-tenant MDR platform merely because a tenant id exists;
+- secure when TLS verification, authentication or secret-file permissions are deliberately disabled;
+- production-ready on an OS that has not passed installation, attack, rollback and upgrade testing.
 
-See [`docs/roadmap-trellix-class.md`](docs/roadmap-trellix-class.md) for the implementation-oriented roadmap.
-
----
-
-## Security principles
-
-- Detect-only is the safe default.
-- AI recommendations should be grounded in collected evidence.
-- High-impact response should be policy-controlled and human-approved unless explicitly configured otherwise.
-- Upstream model credentials stay on the server side.
-- LLM access tokens are expiring and revocable.
-- Production deployments should use trusted TLS certificates.
-- Test and demo screenshots/data should use synthetic or anonymized information.
-
----
-
-## What NT Shield does **not** claim
-
-NT Shield does **not** claim that an LLM replaces a SOC analyst, that every planned AIaaS feature is production-complete in `1.1.0`, or that installing an agent magically turns an organization into an autonomous zero-day-proof fortress. Cybersecurity marketing has enough magic already.
-
-The goal is more practical: **reduce investigation time, preserve evidence, correlate activity across systems, and help analysts respond consistently at scale.**
+The intended deployment model is to **augment an existing SOC/MDR operation** by collecting endpoint evidence, correlating attack chains, reducing repetitive triage and executing explicitly governed defensive actions.
 
 ---
 
@@ -424,5 +493,5 @@ The goal is more practical: **reduce investigation time, preserve evidence, corr
 
 Proprietary — NT Shield Team / internal use.
 
-**Repository:** https://github.com/paddman/Shield  
-**Releases:** https://github.com/paddman/Shield/releases
+**Repository:** `paddman/Shield`  
+**Version:** `1.3.1`
